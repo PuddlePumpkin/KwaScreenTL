@@ -24,6 +24,7 @@ if OCR_ENGINE == "manga":
     except Exception:
         pass
 
+import os
 import tkinter as tk
 from PIL import Image, ImageTk
 import mss
@@ -150,6 +151,7 @@ class ScreenFreezerApp:
         self.tk_img = None
         self.overlay_hwnd = None
         self.overlay_visible = True
+        self.is_dragging = False
         
         # Start checking the queue for trigger events or translation results
         self.root.after(100, self.check_queue)
@@ -172,6 +174,11 @@ class ScreenFreezerApp:
 
     def check_focus(self):
         if not self.active_window:
+            self.root.after(500, self.check_focus)
+            return
+
+        # Don't hide while user is actively selecting text
+        if self.is_dragging:
             self.root.after(500, self.check_focus)
             return
 
@@ -238,9 +245,9 @@ class ScreenFreezerApp:
         self.canvas = tk.Canvas(self.active_window, borderwidth=0, highlightthickness=0, bg="black")
         self.canvas.pack(fill="both", expand=True)
 
-        # Capture overlay HWND for focus tracking
+        # Capture overlay top-level HWND for focus tracking
         self.active_window.update_idletasks()
-        self.overlay_hwnd = self.active_window.winfo_id()
+        self.overlay_hwnd = user32.GetAncestor(self.active_window.winfo_id(), 2)  # GA_ROOT
         self.overlay_visible = True
 
         # 4. Show only the cropped game window content as background
@@ -427,6 +434,7 @@ class ScreenFreezerApp:
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
         self.canvas.bind("<Button-3>", self.on_right_click)
+        self.canvas.bind("<Button-2>", self.on_middle_click)
 
     def on_mouse_move(self, event):
         if self.is_dragging:
@@ -594,20 +602,58 @@ class ScreenFreezerApp:
             self.root.clipboard_append(selected)
             print(f"[clipboard] {selected}")
 
-    def on_right_click(self, event):
-        text_to_search = None
-        # Prefer current selection
+    def get_current_text(self):
+        """Return selected text, or hovered text as fallback."""
         if self.selection_box_idx >= 0 and self.selection_start >= 0 and self.selection_end >= 0:
             start = min(self.selection_start, self.selection_end)
             end = max(self.selection_start, self.selection_end)
             words = self.ocr_boxes[self.selection_box_idx].get('words', [])
-            text_to_search = ''.join(w['text'] for wi, w in enumerate(words) if start <= wi <= end)
-        if not text_to_search and self.current_hover_idx >= 0:
-            # Fallback to hovered box text
-            text_to_search = self.ocr_boxes[self.current_hover_idx]['data']['original']
-        if text_to_search:
-            url = f"https://jisho.org/search/{urllib.parse.quote(text_to_search)}"
+            return ''.join(w['text'] for wi, w in enumerate(words) if start <= wi <= end)
+        if self.current_hover_idx >= 0:
+            return self.ocr_boxes[self.current_hover_idx]['data']['original']
+        return None
+
+    def on_right_click(self, event):
+        text = self.get_current_text()
+        if text:
+            url = f"https://jisho.org/search/{urllib.parse.quote(text)}"
             webbrowser.open(url)
+
+    def on_middle_click(self, event):
+        text = self.get_current_text()
+        if text:
+            threading.Thread(target=self.read_aloud, args=(text,), daemon=True).start()
+
+    def read_aloud(self, text):
+        import asyncio
+        import tempfile
+        # Use Windows MCI (winmm.dll) to play MP3 silently without external player
+        try:
+            import edge_tts
+        except ImportError:
+            print("edge-tts not installed — run: pip install edge-tts")
+            return
+
+        tmp = tempfile.mktemp(suffix=".mp3")
+        try:
+            async def _save():
+                tts = edge_tts.Communicate(text, voice="ja-JP-NanamiNeural")
+                await tts.save(tmp)
+            asyncio.run(_save())
+
+            from ctypes import windll
+            mci = windll.winmm.mciSendStringW
+            buf = ctypes.create_unicode_buffer(256)
+            mci(f'open "{tmp}" alias tts', buf, len(buf), 0)
+            mci('play tts wait', buf, len(buf), 0)
+            mci('close tts', buf, len(buf), 0)
+        except Exception as e:
+            print(f"TTS error: {e}")
+        finally:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
 
     def unfreeze_screen(self):
         if self.active_window:

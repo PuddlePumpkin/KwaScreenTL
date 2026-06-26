@@ -1,7 +1,7 @@
 mss
 pillow
-keyboard
 winocr
 pykakasi
 deep-translator
 manga-ocr
+edge-tts
