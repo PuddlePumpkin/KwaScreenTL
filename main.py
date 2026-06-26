@@ -596,11 +596,19 @@ class ScreenFreezerApp:
         start = min(self.selection_start, self.selection_end)
         end = max(self.selection_start, self.selection_end)
         words = self.ocr_boxes[self.selection_box_idx].get('words', [])
-        selected = ''.join(w['text'] for wi, w in enumerate(words) if start <= wi <= end)
-        if selected:
-            self.root.clipboard_clear()
-            self.root.clipboard_append(selected)
-            print(f"[clipboard] {selected}")
+
+        if start == end:
+            # Click (no drag) → read the whole line aloud
+            box_text = self.ocr_boxes[self.selection_box_idx]['data']['original']
+            if box_text:
+                threading.Thread(target=self.read_aloud, args=(box_text,), daemon=True).start()
+        else:
+            # Drag → copy selected words to clipboard
+            selected = ''.join(w['text'] for wi, w in enumerate(words) if start <= wi <= end)
+            if selected:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(selected)
+                print(f"[clipboard] {selected}")
 
     def get_current_text(self):
         """Return selected text, or hovered text as fallback."""
