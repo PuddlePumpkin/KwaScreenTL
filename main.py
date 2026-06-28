@@ -1,5 +1,6 @@
 import ctypes
 import ctypes.wintypes
+import json
 import os
 import queue
 import re
@@ -203,10 +204,35 @@ class ScreenFreezerApp:
         self.overlay_hwnd = None
         self.overlay_visible = True
         self.is_dragging = False
+        self.current_hover_idx = -1
+        self.ocr_boxes = []
+        self._settings_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+        self._load_settings()
+        self._settings_window = None
         
         # Start checking the queue for trigger events or translation results
         self.root.after(100, self.check_queue)
         self.root.after(500, self.check_focus)
+
+    def _load_settings(self):
+        defaults = {"show_crop": True, "show_romaji": True, "skip_non_japanese": SKIP_NON_JAPANESE}
+        try:
+            with open(self._settings_file, "r") as f:
+                data = json.load(f)
+            for k, v in defaults.items():
+                setattr(self, k, data.get(k, v))
+        except (FileNotFoundError, json.JSONDecodeError):
+            for k, v in defaults.items():
+                setattr(self, k, v)
+
+    def _save_settings(self):
+        data = {
+            "show_crop": self.show_crop,
+            "show_romaji": self.show_romaji,
+            "skip_non_japanese": self.skip_non_japanese,
+        }
+        with open(self._settings_file, "w") as f:
+            json.dump(data, f)
 
     def check_queue(self):
         try:
@@ -218,6 +244,8 @@ class ScreenFreezerApp:
                     self.enter_snip_mode()
                 elif msg_type == "ocr_complete":
                     self.display_translations(data)
+                elif msg_type == "toggle_settings":
+                    self.toggle_settings()
         except queue.Empty:
             pass
         self.root.after(50, self.check_queue)
@@ -227,6 +255,65 @@ class ScreenFreezerApp:
 
     def trigger_snip(self):
         self.msg_queue.put(("trigger_snip", None))
+
+    def trigger_settings(self):
+        self.msg_queue.put(("toggle_settings", None))
+
+    def toggle_settings(self):
+        if self._settings_window and self._settings_window.winfo_exists():
+            self._settings_window.destroy()
+            self._settings_window = None
+            return
+        win = tk.Toplevel(self.root)
+        win.title("Settings")
+        win.geometry("260x180")
+        win.resizable(False, False)
+        win.attributes("-topmost", True)
+        self._settings_window = win
+
+        self._show_crop_var = tk.BooleanVar(value=self.show_crop)
+        self._show_romaji_var = tk.BooleanVar(value=self.show_romaji)
+        self._skip_nj_var = tk.BooleanVar(value=self.skip_non_japanese)
+
+        def on_crop_toggle():
+            self.show_crop = self._show_crop_var.get()
+            self._save_settings()
+            self._refresh_hover_card()
+
+        def on_romaji_toggle():
+            self.show_romaji = self._show_romaji_var.get()
+            self._save_settings()
+            self._refresh_hover_card()
+
+        def on_skip_nj_toggle():
+            self.skip_non_japanese = self._skip_nj_var.get()
+            self._save_settings()
+
+        pad = {"padx": 12, "pady": 3}
+        tk.Label(win, text="Hover Card", font=("Segoe UI", 9, "bold"),
+                 anchor="w").pack(fill="x", padx=12, pady=(10, 2))
+        sep = tk.Frame(win, height=1, bg="#c0c0c0")
+        sep.pack(fill="x", padx=12)
+        tk.Checkbutton(win, text="Show cropped image", variable=self._show_crop_var,
+                       command=on_crop_toggle).pack(anchor="w", **pad)
+        tk.Checkbutton(win, text="Show romaji", variable=self._show_romaji_var,
+                       command=on_romaji_toggle).pack(anchor="w", **pad)
+
+        tk.Label(win, text="OCR Filter", font=("Segoe UI", 9, "bold"),
+                 anchor="w").pack(fill="x", padx=12, pady=(10, 2))
+        sep2 = tk.Frame(win, height=1, bg="#c0c0c0")
+        sep2.pack(fill="x", padx=12)
+        tk.Checkbutton(win, text="Skip non-Japanese text", variable=self._skip_nj_var,
+                       command=on_skip_nj_toggle).pack(anchor="w", **pad)
+
+        win.protocol("WM_DELETE_WINDOW", lambda: (
+            setattr(self, '_settings_window', None), win.destroy()
+        ))
+
+    def _refresh_hover_card(self):
+        if self.current_hover_idx >= 0 and self.current_hover_idx < len(self.ocr_boxes):
+            self.clear_hover_translation()
+            self.show_hover_translation(self.ocr_boxes[self.current_hover_idx])
 
     def check_focus(self):
         if not self.active_window:
@@ -557,7 +644,7 @@ class ScreenFreezerApp:
                 text_clean = re.sub(r'\s+', '', text)
                 if not text_clean:
                     continue
-                if SKIP_NON_JAPANESE and not contains_japanese(text_clean):
+                if self.skip_non_japanese and not contains_japanese(text_clean):
                     continue
 
                 # Check overlap with existing merged lines
@@ -685,6 +772,7 @@ class ScreenFreezerApp:
         self.selection_start = -1
         self.selection_end = -1
         self.selection_overlays = []
+        self._hover_original_text = None
         self._hover_kana_text = None
         self._hover_romaji_text = None
         self._hover_word_idx = -1
@@ -741,6 +829,7 @@ class ScreenFreezerApp:
         for ref in self.highlight_refs:
             self.canvas.itemconfig(ref, outline="#007aff", width=2)
         self.current_hover_idx = -1
+        self._hover_original_text = None
         self._hover_kana_text = None
         self._hover_romaji_text = None
         self._hover_word_idx = -1
@@ -778,12 +867,21 @@ class ScreenFreezerApp:
             highlightthickness=1, bd=0
         )
 
-        crop_tk = ImageTk.PhotoImage(crop_pil)
-        self.crop_tk_imgs.append(crop_tk)
-        tk.Label(frame, image=crop_tk, bg="#ffffff", bd=0).pack(anchor="w", pady=(0, 4))
-        tk.Label(frame, text=data['original'], fg="#a31515", bg="#ffffff",
-                 font=("Segoe UI", 11, "bold"), anchor="w", justify="left"
-                 ).pack(fill="x", pady=(0, 2))
+        if self.show_crop:
+            crop_tk = ImageTk.PhotoImage(crop_pil)
+            self.crop_tk_imgs.append(crop_tk)
+            tk.Label(frame, image=crop_tk, bg="#ffffff", bd=0).pack(anchor="w", pady=(0, 4))
+
+        self._hover_original_text = tk.Text(
+            frame, height=1, wrap="none", bd=0, highlightthickness=0,
+            bg="#ffffff", fg="#a31515",
+            font=("Segoe UI", 11, "bold"),
+        )
+        self._hover_original_text.insert("1.0", data['original'])
+        self._hover_original_text.tag_config("hl", background="#ffcc00")
+        self._hover_original_text.config(state="disabled")
+        self._hover_original_text.pack(fill="x", pady=(0, 2))
+
         self._hover_kana_text = tk.Text(
             frame, height=1, wrap="none", bd=0, highlightthickness=0,
             bg="#ffffff", fg="#248a3d",
@@ -802,7 +900,9 @@ class ScreenFreezerApp:
         self._hover_romaji_text.insert("1.0", data['romaji'])
         self._hover_romaji_text.tag_config("hl", background="#ffcc00")
         self._hover_romaji_text.config(state="disabled")
-        self._hover_romaji_text.pack(fill="x", pady=(0, 2))
+        if self.show_romaji:
+            self._hover_romaji_text.pack(fill="x", pady=(0, 2))
+
         tk.Label(frame, text=data['english'], fg="#1c1c1e", bg="#ffffff",
                  font=("Segoe UI", 11, "bold"), anchor="w", justify="left",
                  wraplength=w - 16
@@ -877,7 +977,7 @@ class ScreenFreezerApp:
         self._hover_overlay_items.append(item)
 
     def _clear_hover_tags(self):
-        for tw in (self._hover_kana_text, self._hover_romaji_text):
+        for tw in (self._hover_original_text, self._hover_kana_text, self._hover_romaji_text):
             if tw:
                 tw.tag_remove("hl", "1.0", "end")
 
@@ -892,6 +992,8 @@ class ScreenFreezerApp:
         kana_ranges, romaji_ranges = self._build_item_ranges(items)
         for kr, rr in zip(kana_ranges, romaji_ranges):
             if kr['char_start'] <= char_idx < kr['char_end']:
+                if self._hover_original_text:
+                    self._hover_original_text.tag_add("hl", f"1.{kr['char_start']}", f"1.{kr['char_end']}")
                 if self._hover_kana_text:
                     self._hover_kana_text.tag_add("hl", f"1.{kr['text_start']}", f"1.{kr['text_end']}")
                 if self._hover_romaji_text:
@@ -1093,11 +1195,13 @@ def register_hotkey_win32(app):
     user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 0)  # PM_NOREMOVE
 
     mods = MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT
-    HK_CAPTURE = 1  # Ctrl+Alt+Shift+E
-    HK_SNIP    = 2  # Ctrl+Alt+Shift+R
+    HK_CAPTURE  = 1  # Ctrl+Alt+Shift+E
+    HK_SNIP     = 2  # Ctrl+Alt+Shift+R
+    HK_SETTINGS = 3  # Ctrl+Alt+Shift+S
 
-    reg_ok = user32.RegisterHotKey(None, HK_CAPTURE, mods, ord('E'))
-    reg_ok = user32.RegisterHotKey(None, HK_SNIP,    mods, ord('R')) and reg_ok
+    reg_ok = user32.RegisterHotKey(None, HK_CAPTURE,  mods, ord('E'))
+    reg_ok = user32.RegisterHotKey(None, HK_SNIP,     mods, ord('R')) and reg_ok
+    reg_ok = user32.RegisterHotKey(None, HK_SETTINGS, mods, ord('S')) and reg_ok
 
     if not reg_ok:
         err = ctypes.get_last_error()
@@ -1113,9 +1217,11 @@ def register_hotkey_win32(app):
             "shift": (0xA0, 0xA1),
             "e":     (0x45, None),
             "r":     (0x52, None),
+            "s":     (0x53, None),
         }
         pressed_e = False
         pressed_r = False
+        pressed_s = False
         while True:
             ctrl  = is_key_down(VK_MAP["ctrl"][0])  or is_key_down(VK_MAP["ctrl"][1])
             alt   = is_key_down(VK_MAP["alt"][0])   or is_key_down(VK_MAP["alt"][1])
@@ -1128,9 +1234,14 @@ def register_hotkey_win32(app):
                 if not pressed_r:
                     pressed_r = True
                     app.trigger_snip()
+            elif ctrl and alt and shift and is_key_down(VK_MAP["s"][0]):
+                if not pressed_s:
+                    pressed_s = True
+                    app.trigger_settings()
             else:
                 pressed_e = False
                 pressed_r = False
+                pressed_s = False
             time.sleep(0.05)
         return
 
@@ -1141,6 +1252,8 @@ def register_hotkey_win32(app):
                 app.trigger()
             elif msg.wParam == HK_SNIP:
                 app.trigger_snip()
+            elif msg.wParam == HK_SETTINGS:
+                app.trigger_settings()
         user32.TranslateMessage(ctypes.byref(msg))
         user32.DispatchMessageW(ctypes.byref(msg))
 
@@ -1153,6 +1266,7 @@ def main():
     print("Application started.")
     print("  Ctrl+Alt+Shift+E  Capture game window for OCR / translation")
     print("  Ctrl+Alt+Shift+R  Snip mode (drag-select a region)")
+    print("  Ctrl+Alt+Shift+S  Settings panel")
     print("  Press Escape while frozen to unfreeze and restore focus.")
 
     try:
