@@ -926,6 +926,13 @@ class ScreenFreezerApp:
         full_text = ''.join(it['orig'] for it in ki)
         pad_x = 6
 
+        # Expand card width to fit original Japanese text
+        orig_w = kf.measure(data['original'])
+        if orig_w + pad_x * 2 > w:
+            w = orig_w + pad_x * 2
+            x = orig['x'] + (orig['width'] - w) // 2
+            x = max(0, min(x, screen_w - w))
+
         # Calculate card height based on visible content
         furigana_size = max(8, self.japanese_font_size // 2 - 1)
         ff_temp = tkfont.Font(family=self.japanese_font, size=furigana_size)
