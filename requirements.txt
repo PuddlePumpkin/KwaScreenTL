@@ -2,6 +2,9 @@ mss
 pillow
 winocr
 pykakasi
+sudachipy
+sudachidict_core
+jaconv
 deep-translator
 edge-tts
 paddleocr

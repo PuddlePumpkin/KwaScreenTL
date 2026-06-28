@@ -57,7 +57,9 @@ from PIL import Image, ImageTk
 import mss
 import onnxruntime  # must precede winocr to avoid WinRT DLL conflict
 import winocr
+import jaconv
 import pykakasi
+from sudachipy import Dictionary, SplitMode
 from deep_translator import GoogleTranslator
 from concurrent.futures import ThreadPoolExecutor
 import webbrowser
@@ -134,8 +136,9 @@ def capture_moused_monitor():
                 return sct.grab(monitor), monitor
         return sct.grab(sct.monitors[1]), sct.monitors[1]
 
-# Initialize PyKakasi globally (thread-safe)
-# GoogleTranslator is NOT thread-safe, so we instantiate it per-call instead
+# Initialize SudachiPy globally for context-aware readings (thread-safe)
+# We keep pykakasi for kana→romaji conversion only (no ambiguity there)
+sudachi = Dictionary().create()
 kks = pykakasi.kakasi()
 
 def contains_japanese(text):
@@ -151,11 +154,22 @@ def translate_and_convert(japanese_text):
     """Convert Japanese to Romaji, Hiragana, and English translation."""
     print(f"[TRANSLATE] input='{japanese_text}'")
     try:
-        # Get PyKakasi conversions
-        result = kks.convert(japanese_text)
-        romaji = " ".join([item['hepburn'] for item in result])
-        # hira contains hiragana, but we fallback to orig for symbols/numbers
-        kana = " ".join([item['hira'] if item['hira'] else item['orig'] for item in result])
+        # Use SudachiPy (Mode C = longest natural chunks) for context-aware readings
+        tokens = sudachi.tokenize(japanese_text, SplitMode.C)
+        items = []
+        for token in tokens:
+            orig = token.surface()
+            reading = token.reading_form()
+            hira = jaconv.kata2hira(reading) if reading else orig
+            romaji_result = kks.convert(hira)
+            hepburn = " ".join([r['hepburn'] for r in romaji_result])
+            items.append({
+                'orig': orig,
+                'hira': hira,
+                'hepburn': hepburn,
+            })
+        romaji = " ".join([item['hepburn'] for item in items])
+        kana = " ".join([item['hira'] if item['hira'] else item['orig'] for item in items])
         
         # Translate to English
         if TRANSLATOR == "deepl":
@@ -163,16 +177,19 @@ def translate_and_convert(japanese_text):
         else:
             english = GoogleTranslator(source='ja', target='en').translate(japanese_text)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         romaji = "[Error]"
         kana = japanese_text
         english = f"Translation error: {e}"
+        items = []
         
     return {
         'original': japanese_text,
         'romaji': romaji,
         'kana': kana,
         'english': english,
-        'kakasi_items': result,
+        'kakasi_items': items,
     }
 
 def get_line_bounding_rect(line):
@@ -1035,7 +1052,7 @@ class ScreenFreezerApp:
         ))
 
     def _build_item_ranges(self, items):
-        """Build char→kana and char→romaji index ranges from pykakasi items."""
+        """Build char→kana and char→romaji index ranges from kakasi_items."""
         kana_ranges = []
         romaji_ranges = []
         kana_off = 0
