@@ -837,6 +837,7 @@ class ScreenFreezerApp:
         self.selection_overlays = []
         self._hover_card_items = []
         self._hover_card_hl_items = []
+        self._hover_card_bg_id = None
         self._hover_chunk_positions = []
         self._hover_hl_y = 0
         self._hover_word_idx = -1
@@ -892,6 +893,7 @@ class ScreenFreezerApp:
             self.canvas.delete(item_id)
         self._hover_card_items = []
         self._hover_chunk_positions = []
+        self._hover_card_bg_id = None
         self._clear_hover_tags()
         for ref in self.highlight_refs:
             self.canvas.itemconfig(ref, outline="#007aff", width=2)
@@ -905,69 +907,87 @@ class ScreenFreezerApp:
         crop_pil = box['crop_pil']
         orig = box['orig_bbox']
         w = box['w']
-        h = box['h']
 
         idx = self.ocr_boxes.index(box)
         if 0 <= idx < len(self.highlight_refs):
             self.canvas.itemconfig(self.highlight_refs[idx], outline="#ff9500", width=3)
 
         screen_w = self.canvas.winfo_width()
-        screen_h = self.canvas.winfo_height()
 
         x = orig['x'] + (orig['width'] - w) // 2
-        y = orig['y'] + orig['height'] + 24
-
-        if y + h > screen_h:
-            y = orig['y'] - h - 24
-            if y < 0:
-                y = (screen_h - h) // 2
-                x = (screen_w - w) // 2
+        gap = 4
+        card_bottom = orig['y'] - gap
 
         x = max(0, min(x, screen_w - w))
-        y = max(0, min(y, screen_h - h))
 
         kf = tkfont.Font(family=self.japanese_font, size=self.japanese_font_size, weight="bold")
         en_font = tkfont.Font(family="Segoe UI", size=self.font_size_en, weight="bold")
         ki = data.get('kakasi_items', [])
         full_text = ''.join(it['orig'] for it in ki)
         pad_x = 6
-        # y positions within the card
-        card_y = y
 
         # Calculate card height based on visible content
+        furigana_size = max(8, self.japanese_font_size // 2 - 1)
+        ff_temp = tkfont.Font(family=self.japanese_font, size=furigana_size)
+        fg_ascent = ff_temp.metrics("ascent")
+        fg_line_h = ff_temp.metrics("linespace")
+        top_pad = max(8, 6)
         if self.show_crop:
             crop_tk = ImageTk.PhotoImage(crop_pil)
             self.crop_tk_imgs.append(crop_tk)
             ih = crop_tk.height()
-            line_y = card_y + 3 + ih + 24
+            content_h = 3 + ih + 24
         else:
-            line_y = card_y + 27
+            content_h = top_pad
         line_h = max(30, kf.metrics("linespace"))
-        romaji_y = line_y + line_h + 2
-        eng_y = romaji_y + 18 if self.show_romaji else line_y + line_h
+        content_h += line_h + 2  # original text line + gap
+        content_h += fg_line_h + 2  # furigana + gap
+        if self.show_romaji:
+            content_h += 18 + 2  # romaji + gap
         est_chars_per_line = max(1, (w - 16) // 7)
         en_lines = max(1, -(-len(data['english']) // est_chars_per_line))
         en_line_h = en_font.metrics("linespace")
         en_height = en_lines * en_line_h
-        card_h = eng_y + en_height + 3 - card_y
+        content_h += en_height  # english
+        content_h += 3  # bottom padding
+        card_h = content_h
+
+        # Card positioned above the OCR box, extending upward
+        card_h = content_h
+        card_top = max(0, card_bottom - card_h)
+        card_y = card_top
 
         # Background card
-        self._hover_card_items.append(self.canvas.create_rectangle(
-            x, card_y, x + w, card_y + card_h,
+        self._hover_card_bg_id = self.canvas.create_rectangle(
+            x, card_top, x + w, card_bottom,
             fill="#ffffff", outline="#e5e5ea", width=1
-        ))
+        )
+        self._hover_card_items.append(self._hover_card_bg_id)
 
         # Crop image
         if self.show_crop:
             self._hover_card_items.append(self.canvas.create_image(
                 x + 5, card_y + 3, image=crop_tk, anchor="nw"
             ))
+            line_y = card_y + 3 + ih + 24
+        else:
+            line_y = card_y + top_pad
 
-        # Furigana + original text (use font measurement so no widget layout needed)
+        # Original text (bold Japanese)
         self._hover_kakasi_items = ki
         self._hover_chunk_positions = []
-        ff = (self.japanese_font, max(10, self.japanese_font_size // 2))
-        fg_y = line_y - 2  # bottom of furigana, above the text line
+        ascent = kf.metrics("ascent")
+        descent = kf.metrics("descent")
+        self._hover_hl_y = line_y
+        self._hover_card_items.append(self.canvas.create_text(
+            x + pad_x, line_y, text=data['original'],
+            font=(self.japanese_font, self.japanese_font_size, "bold"),
+            fill="#a31515", anchor="nw"
+        ))
+
+        # Furigana below original text
+        ff = (self.japanese_font, furigana_size)
+        fg_y = line_y + line_h - 2
         char_off = 0
         for item in ki:
             orig = item.get('orig', '')
@@ -984,19 +1004,13 @@ class ScreenFreezerApp:
             if orig != hira:
                 cx = x + pad_x + prefix_w + group_w / 2
                 self._hover_card_items.append(self.canvas.create_text(
-                    cx, fg_y, text=hira, font=ff, fill="#248a3d", anchor="s"
+                    cx, fg_y, text=hira, font=ff, fill="#248a3d", anchor="n"
                 ))
             char_off += len(orig)
 
-        # Original text (bold Japanese)
-        ascent = kf.metrics("ascent")
-        descent = kf.metrics("descent")
-        self._hover_hl_y = line_y
-        self._hover_card_items.append(self.canvas.create_text(
-            x + pad_x, line_y, text=data['original'],
-            font=(self.japanese_font, self.japanese_font_size, "bold"),
-            fill="#a31515", anchor="nw"
-        ))
+        # Romaji and English y positions
+        romaji_y = fg_y + fg_line_h + 2
+        eng_y = romaji_y + 18 if self.show_romaji else fg_y + fg_line_h + 2
 
         # Romaji text
         if self.show_romaji:
@@ -1075,7 +1089,7 @@ class ScreenFreezerApp:
         y1, y2 = min(ys), max(ys)
         item = self.canvas.create_rectangle(
             x1, y1, x2, y2,
-            fill="#ffcc00", stipple="gray25", outline=""
+            fill="#ffe082", stipple="gray25", outline=""
         )
         self._hover_overlay_items.append(item)
 
@@ -1094,9 +1108,11 @@ class ScreenFreezerApp:
                 hl = self.canvas.create_rectangle(
                     cp['x'], self._hover_hl_y,
                     cp['x'] + cp['w'], self._hover_hl_y + 28,
-                    fill="#ffcc00", stipple="gray25", outline=""
+                    fill="#ffe082", outline=""
                 )
                 self._hover_card_hl_items.append(hl)
+                if self._hover_card_bg_id is not None:
+                    self.canvas.lift(hl, self._hover_card_bg_id)
                 break
 
     # ── Word-level selection & clipboard ──────────────────────────────────────
