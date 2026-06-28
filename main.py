@@ -141,6 +141,28 @@ def capture_moused_monitor():
 sudachi = Dictionary().create()
 kks = pykakasi.kakasi()
 
+# ── Furigana override map ────────────────────────────────────────────────────
+# Maps token surface → list of additional readings to include as alternatives.
+# Users can edit furigana_overrides.json to add game-specific readings.
+OVERRIDE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "furigana_overrides.json")
+FURIGANA_OVERRIDES = {}
+def _load_overrides():
+    global FURIGANA_OVERRIDES
+    try:
+        if os.path.isfile(OVERRIDE_FILE):
+            with open(OVERRIDE_FILE, "r", encoding="utf-8") as f:
+                FURIGANA_OVERRIDES = json.load(f)
+    except Exception as e:
+        print(f"[OVERRIDE] Failed to load: {e}")
+_load_overrides()
+
+def _save_overrides():
+    try:
+        with open(OVERRIDE_FILE, "w", encoding="utf-8") as f:
+            json.dump(FURIGANA_OVERRIDES, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[OVERRIDE] Failed to save: {e}")
+
 def contains_japanese(text):
     """Check if the text contains any Japanese characters (Hiragana, Katakana, Kanji)."""
     # Unicode ranges:
@@ -149,6 +171,29 @@ def contains_japanese(text):
     # Kanji (CJK Unified Ideographs): \u4e00-\u9faf
     pattern = re.compile(r'[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9faf]')
     return bool(pattern.search(text))
+
+def _build_alternatives(orig, sudachi_hira):
+    """Build list of alternative readings for a token."""
+    alts = []
+    seen = set()
+    def _add(h):
+        if h in seen:
+            return
+        seen.add(h)
+        h_hepburn = " ".join([r['hepburn'] for r in kks.convert(h)])
+        alts.append({'hira': h, 'hepburn': h_hepburn})
+    _add(sudachi_hira)
+    try:
+        pk = kks.convert(orig)
+        pk_hira = " ".join([i['hira'] if i['hira'] else i['orig'] for i in pk])
+        pk_hira_norm = pk_hira.replace(" ", "")
+        if pk_hira_norm != sudachi_hira:
+            _add(pk_hira_norm)
+    except Exception:
+        pass
+    for r in FURIGANA_OVERRIDES.get(orig, []):
+        _add(r)
+    return alts
 
 def translate_and_convert(japanese_text):
     """Convert Japanese to Romaji, Hiragana, and English translation."""
@@ -161,12 +206,13 @@ def translate_and_convert(japanese_text):
             orig = token.surface()
             reading = token.reading_form()
             hira = jaconv.kata2hira(reading) if reading else orig
-            romaji_result = kks.convert(hira)
-            hepburn = " ".join([r['hepburn'] for r in romaji_result])
+            alternatives = _build_alternatives(orig, hira)
             items.append({
                 'orig': orig,
-                'hira': hira,
-                'hepburn': hepburn,
+                'hira': alternatives[0]['hira'],
+                'hepburn': alternatives[0]['hepburn'],
+                'alternatives': alternatives,
+                'active_idx': 0,
             })
         romaji = " ".join([item['hepburn'] for item in items])
         kana = " ".join([item['hira'] if item['hira'] else item['orig'] for item in items])
@@ -859,6 +905,8 @@ class ScreenFreezerApp:
         self._hover_hl_y = 0
         self._hover_word_idx = -1
         self._hover_kakasi_items = []
+        self._hover_fg_items = {}
+        self._hover_romaji_id = None
         self._hover_overlay_items = []
 
         for box in boxes:
@@ -878,6 +926,9 @@ class ScreenFreezerApp:
         self.canvas.bind("<Button-3>", self.on_right_click)
         self.canvas.bind("<Shift-Button-3>", self.on_shift_right_click)
         self.canvas.bind("<Button-2>", self.on_middle_click)
+        self.canvas.bind("<MouseWheel>", self.on_furigana_scroll)
+        self.canvas.bind("<Button-4>", self.on_furigana_scroll)
+        self.canvas.bind("<Button-5>", self.on_furigana_scroll)
 
     def on_mouse_move(self, event):
         if self.is_dragging:
@@ -916,6 +967,8 @@ class ScreenFreezerApp:
             self.canvas.itemconfig(ref, outline="#007aff", width=2)
         self.current_hover_idx = -1
         self._hover_kakasi_items = []
+        self._hover_fg_items = {}
+        self._hover_romaji_id = None
         self._hover_word_idx = -1
         self._clear_hover_overlay()
 
@@ -1013,23 +1066,29 @@ class ScreenFreezerApp:
         ff = (self.japanese_font, furigana_size)
         fg_y = line_y + line_h - 2
         char_off = 0
+        self._hover_fg_items = {}  # chunk_idx → canvas item id
+        self._hover_card_x = x
+        self._hover_pad_x = pad_x
         for item in ki:
             orig = item.get('orig', '')
             hira = item.get('hira') or orig
             prefix_w = kf.measure(full_text[:char_off])
             group_w = kf.measure(orig)
             chunk_x = x + pad_x + prefix_w
-            self._hover_chunk_positions.append({
+            cp = {
                 'x': chunk_x,
                 'w': group_w,
                 'char_start': char_off,
                 'char_end': char_off + len(orig),
-            })
+            }
+            self._hover_chunk_positions.append(cp)
             if orig != hira:
                 cx = x + pad_x + prefix_w + group_w / 2
-                self._hover_card_items.append(self.canvas.create_text(
+                fg_id = self.canvas.create_text(
                     cx, fg_y, text=hira, font=ff, fill="#248a3d", anchor="n"
-                ))
+                )
+                self._hover_card_items.append(fg_id)
+                self._hover_fg_items[char_off] = fg_id
             char_off += len(orig)
 
         # Romaji and English y positions
@@ -1037,12 +1096,19 @@ class ScreenFreezerApp:
         eng_y = romaji_y + 18 if self.show_romaji else fg_y + fg_line_h + 2
 
         # Romaji text
+        self._hover_romaji_id = None
         if self.show_romaji:
-            self._hover_card_items.append(self.canvas.create_text(
+            self._hover_romaji_id = self.canvas.create_text(
                 x + pad_x, romaji_y, text=data['romaji'],
                 font=("Segoe UI", max(7, self.font_size_en - 2), "italic"),
                 fill="#0066cc", anchor="nw"
-            ))
+            )
+            self._hover_card_items.append(self._hover_romaji_id)
+
+        # Store furigana bounds for scroll hit detection
+        self._hover_fg_y = fg_y
+        self._hover_fg_ascent = fg_ascent
+        self._hover_fg_line_h = fg_line_h
 
         # English text
         self._hover_card_items.append(self.canvas.create_text(
@@ -1050,6 +1116,47 @@ class ScreenFreezerApp:
             font=("Segoe UI", self.font_size_en, "bold"),
             fill="#1c1c1e", anchor="nw", width=w - 16
         ))
+
+    def on_furigana_scroll(self, event):
+        """Cycle furigana reading for the highlighted (hovered) kanji chunk."""
+        if self.current_hover_idx < 0 or self._hover_word_idx < 0:
+            return
+        # Find chunk matching the currently highlighted word
+        box = self.ocr_boxes[self.current_hover_idx]
+        ki = box['data']['kakasi_items']
+        target = None
+        for cp in self._hover_chunk_positions:
+            if cp['char_start'] <= self._hover_word_idx < cp['char_end']:
+                # Find corresponding item in kakasi_items by char offset
+                off = 0
+                for it in ki:
+                    if off == cp['char_start']:
+                        target = it
+                        break
+                    off += len(it.get('orig',''))
+                break
+        if target is None:
+            return
+        alts = target.get('alternatives', [])
+        if len(alts) < 2:
+            return
+        # Determine direction
+        delta = event.delta if hasattr(event, 'delta') else (120 if event.num == 4 else -120)
+        step = 1 if delta > 0 else -1
+        new_idx = (target['active_idx'] + step) % len(alts)
+        target['active_idx'] = new_idx
+        target['hira'] = alts[new_idx]['hira']
+        target['hepburn'] = alts[new_idx]['hepburn']
+        # Update furigana canvas text
+        fg_id = self._hover_fg_items.get(cp['char_start'])
+        if fg_id is not None and target['hira'] != target['orig']:
+            self.canvas.itemconfig(fg_id, text=target['hira'])
+        # Update romaji
+        new_romaji = " ".join([i['hepburn'] for i in ki])
+        box['data']['romaji'] = new_romaji
+        if self._hover_romaji_id is not None:
+            self.canvas.itemconfig(self._hover_romaji_id, text=new_romaji)
+
 
     def _build_item_ranges(self, items):
         """Build char→kana and char→romaji index ranges from kakasi_items."""
