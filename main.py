@@ -52,6 +52,7 @@ FONT_SIZES = [16, 18, 20, 22, 24, 26, 28, 32]
 DEFAULT_FONT_SIZE = 22
 
 import tkinter as tk
+import tkinter.font as tkfont
 from PIL import Image, ImageTk
 import mss
 import onnxruntime  # must precede winocr to avoid WinRT DLL conflict
@@ -834,9 +835,12 @@ class ScreenFreezerApp:
         self.selection_start = -1
         self.selection_end = -1
         self.selection_overlays = []
-        self._hover_original_text = None
-        self._hover_romaji_text = None
+        self._hover_card_items = []
+        self._hover_card_hl_items = []
+        self._hover_chunk_positions = []
+        self._hover_hl_y = 0
         self._hover_word_idx = -1
+        self._hover_kakasi_items = []
         self._hover_overlay_items = []
 
         for box in boxes:
@@ -884,14 +888,15 @@ class ScreenFreezerApp:
                 self._show_hover_overlay_highlight(hover_idx, wi)
 
     def clear_hover_translation(self):
-        if self.hover_window_id:
-            self.canvas.delete(self.hover_window_id)
-            self.hover_window_id = None
+        for item_id in self._hover_card_items:
+            self.canvas.delete(item_id)
+        self._hover_card_items = []
+        self._hover_chunk_positions = []
+        self._clear_hover_tags()
         for ref in self.highlight_refs:
             self.canvas.itemconfig(ref, outline="#007aff", width=2)
         self.current_hover_idx = -1
-        self._hover_original_text = None
-        self._hover_romaji_text = None
+        self._hover_kakasi_items = []
         self._hover_word_idx = -1
         self._clear_hover_overlay()
 
@@ -921,44 +926,84 @@ class ScreenFreezerApp:
         x = max(0, min(x, screen_w - w))
         y = max(0, min(y, screen_h - h))
 
-        frame = tk.Frame(
-            self.canvas, bg="#ffffff", padx=5, pady=3,
-            highlightbackground="#e5e5ea", highlightcolor="#e5e5ea",
-            highlightthickness=1, bd=0
-        )
+        kf = tkfont.Font(family=self.japanese_font, size=self.japanese_font_size, weight="bold")
+        ki = data.get('kakasi_items', [])
+        full_text = ''.join(it['orig'] for it in ki)
+        pad_x = 6
+        # y positions within the card
+        card_y = y
+        line_y = card_y + 27  # same as tw.winfo_y() — pady(3)+pack pady(24)+internal
 
+        # Background card
+        self._hover_card_items.append(self.canvas.create_rectangle(
+            x, card_y, x + w, card_y + h,
+            fill="#ffffff", outline="#e5e5ea", width=1
+        ))
+
+        # Crop image
         if self.show_crop:
             crop_tk = ImageTk.PhotoImage(crop_pil)
             self.crop_tk_imgs.append(crop_tk)
-            tk.Label(frame, image=crop_tk, bg="#ffffff", bd=0).pack(anchor="w", pady=(0, 22))
+            ih = crop_tk.height()
+            self._hover_card_items.append(self.canvas.create_image(
+                x + 5, card_y + 3, image=crop_tk, anchor="nw"
+            ))
+            line_y = card_y + 3 + ih + 24  # image bottom + pady=(0,22) + frame pady(2)
 
-        self._hover_original_text = tk.Text(
-            frame, height=1, wrap="none", bd=0, highlightthickness=0,
-            bg="#ffffff", fg="#a31515",
+        # Furigana + original text (use font measurement so no widget layout needed)
+        self._hover_kakasi_items = ki
+        self._hover_chunk_positions = []
+        ff = (self.japanese_font, max(10, self.japanese_font_size // 2))
+        fg_y = line_y - 2  # bottom of furigana, above the text line
+        char_off = 0
+        for item in ki:
+            orig = item.get('orig', '')
+            hira = item.get('hira') or orig
+            prefix_w = kf.measure(full_text[:char_off])
+            group_w = kf.measure(orig)
+            chunk_x = x + pad_x + prefix_w
+            self._hover_chunk_positions.append({
+                'x': chunk_x,
+                'w': group_w,
+                'char_start': char_off,
+                'char_end': char_off + len(orig),
+            })
+            if orig != hira:
+                cx = x + pad_x + prefix_w + group_w / 2
+                self._hover_card_items.append(self.canvas.create_text(
+                    cx, fg_y, text=hira, font=ff, fill="#248a3d", anchor="s"
+                ))
+            char_off += len(orig)
+
+        # Original text (bold Japanese)
+        ascent = kf.metrics("ascent")
+        descent = kf.metrics("descent")
+        self._hover_hl_y = line_y
+        self._hover_card_items.append(self.canvas.create_text(
+            x + pad_x, line_y, text=data['original'],
             font=(self.japanese_font, self.japanese_font_size, "bold"),
-        )
-        self._hover_original_text.insert("1.0", data['original'])
-        self._hover_original_text.tag_config("hl", background="#ffcc00")
-        self._hover_original_text.config(state="disabled")
-        self._hover_original_text.pack(fill="x")
+            fill="#a31515", anchor="nw"
+        ))
 
-        self._hover_romaji_text = tk.Text(
-            frame, height=1, wrap="none", bd=0, highlightthickness=0,
-            bg="#ffffff", fg="#0066cc",
-            font=("Segoe UI", max(7, self.font_size_en - 2), "italic"),
-        )
-        self._hover_romaji_text.insert("1.0", data['romaji'])
-        self._hover_romaji_text.tag_config("hl", background="#ffcc00")
-        self._hover_romaji_text.config(state="disabled")
+        # Line height for 22pt text
+        line_h = max(30, kf.metrics("linespace"))
+
+        # Romaji text
+        romaji_y = line_y + line_h + 2
         if self.show_romaji:
-            self._hover_romaji_text.pack(fill="x", pady=(0, 2))
+            self._hover_card_items.append(self.canvas.create_text(
+                x + pad_x, romaji_y, text=data['romaji'],
+                font=("Segoe UI", max(7, self.font_size_en - 2), "italic"),
+                fill="#0066cc", anchor="nw"
+            ))
 
-        tk.Label(frame, text=data['english'], fg="#1c1c1e", bg="#ffffff",
-                 font=("Segoe UI", self.font_size_en, "bold"), anchor="w", justify="left",
-                 wraplength=w - 16
-                 ).pack(fill="x")
-
-        self.hover_window_id = self.canvas.create_window(x, y, window=frame, anchor="nw")
+        # English text
+        eng_y = romaji_y + 18 if self.show_romaji else line_y + line_h
+        self._hover_card_items.append(self.canvas.create_text(
+            x + pad_x, eng_y, text=data['english'],
+            font=("Segoe UI", self.font_size_en, "bold"),
+            fill="#1c1c1e", anchor="nw", width=w - 16
+        ))
 
     def _build_item_ranges(self, items):
         """Build char→kana and char→romaji index ranges from pykakasi items."""
@@ -1027,26 +1072,23 @@ class ScreenFreezerApp:
         self._hover_overlay_items.append(item)
 
     def _clear_hover_tags(self):
-        if self._hover_original_text:
-            self._hover_original_text.tag_remove("hl", "1.0", "end")
-        if self._hover_romaji_text:
-            self._hover_romaji_text.tag_remove("hl", "1.0", "end")
+        for item_id in self._hover_card_hl_items:
+            self.canvas.delete(item_id)
+        self._hover_card_hl_items = []
 
     def update_hover_highlights(self, box, char_idx):
-        """Highlight kana/romaji ranges that correspond to the hovered character."""
+        """Draw highlight rect in card for the hovered chunk."""
         self._clear_hover_tags()
-        if char_idx < 0:
+        if char_idx < 0 or not hasattr(self, '_hover_hl_y'):
             return
-        items = box['data'].get('kakasi_items', [])
-        if not items:
-            return
-        kana_ranges, romaji_ranges = self._build_item_ranges(items)
-        for kr, rr in zip(kana_ranges, romaji_ranges):
-            if kr['char_start'] <= char_idx < kr['char_end']:
-                if self._hover_original_text:
-                    self._hover_original_text.tag_add("hl", f"1.{kr['char_start']}", f"1.{kr['char_end']}")
-                if self._hover_romaji_text:
-                    self._hover_romaji_text.tag_add("hl", f"1.{rr['text_start']}", f"1.{rr['text_end']}")
+        for cp in self._hover_chunk_positions:
+            if cp['char_start'] <= char_idx < cp['char_end']:
+                hl = self.canvas.create_rectangle(
+                    cp['x'], self._hover_hl_y,
+                    cp['x'] + cp['w'], self._hover_hl_y + 28,
+                    fill="#ffcc00", stipple="gray25", outline=""
+                )
+                self._hover_card_hl_items.append(hl)
                 break
 
     # ── Word-level selection & clipboard ──────────────────────────────────────
