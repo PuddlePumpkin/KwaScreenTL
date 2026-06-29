@@ -170,12 +170,12 @@ def _build_alternatives(orig, sudachi_hira):
     """Build list of alternative readings for a token using jamdict."""
     alts = []
     seen = set()
-    def _add(h):
+    def _add(h, rtype='unknown'):
         if h in seen:
             return
         seen.add(h)
         h_hepburn = " ".join([r['hepburn'] for r in kks.convert(h)])
-        alts.append({'hira': h, 'hepburn': h_hepburn})
+        alts.append({'hira': h, 'hepburn': h_hepburn, 'type': rtype})
 
     _add(sudachi_hira)
 
@@ -194,30 +194,41 @@ def _build_alternatives(orig, sudachi_hira):
         try:
             jam_result = _get_jam().lookup(orig)
 
-            # 1. JMDict whole-word readings
+            # 1. JMDict whole-word readings (type=unknown)
             for entry in jam_result.entries:
                 for kf in entry.kana_forms:
                     r = jaconv.kata2hira(kf.text) if kf.text else ''
                     if r:
                         _add(r)
 
-            # 2. KanjiDic2 per-character readings
+            # 2. KanjiDic2 per-character readings (type=on/kun/nanori)
             for ch in jam_result.chars:
                 lit = ch.literal
                 if lit is None or lit not in orig:
                     continue
                 for g in ch.rm_groups:
                     for r in g.on_readings:
-                        _add(jaconv.kata2hira(str(r)))
+                        _add(jaconv.kata2hira(str(r)), 'on')
                     for r in g.kun_readings:
                         clean = jaconv.kata2hira(str(r)).split('.')[0].replace('-', '')
                         if clean:
-                            _add(clean)
+                            _add(clean, 'kun')
                 if hasattr(ch, 'nanoris') and ch.nanoris:
                     for n in ch.nanoris:
-                        _add(jaconv.kata2hira(str(n)))
+                        _add(jaconv.kata2hira(str(n)), 'nanori')
         except Exception:
             pass
+
+    # Context-based filter: compound (jukugo) → on'yomi, standalone → kun'yomi
+    # XXX: May need to revert this filtering if it causes too many missing readings
+    kanji_count = sum(1 for c in orig if _is_kanji(c))
+    default = alts[0]
+    if kanji_count > 1:
+        alts = [a for a in alts if a['type'] in ('on', 'unknown')]
+    elif kanji_count == 1:
+        alts = [a for a in alts if a['type'] in ('kun', 'nanori', 'unknown')]
+    if default not in alts:
+        alts.insert(0, default)
 
     return alts
 
