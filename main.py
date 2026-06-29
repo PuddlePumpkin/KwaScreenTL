@@ -279,11 +279,13 @@ def translate_and_convert(japanese_text):
         for token in tokens:
             orig = token.surface()
             reading = token.reading_form()
+            dict_form = token.dictionary_form()
             hira = jaconv.kata2hira(reading) if reading else orig
             if any(_is_kanji(c) for c in orig):
                 alternatives = _build_alternatives(orig, hira)
                 items.append({
                     'orig': orig,
+                    'dict_form': dict_form,
                     'hira': alternatives[0]['hira'],
                     'hepburn': alternatives[0]['hepburn'],
                     'alternatives': alternatives,
@@ -293,6 +295,7 @@ def translate_and_convert(japanese_text):
                 # Pure symbols/punctuation (no kana): show original character
                 items.append({
                     'orig': orig,
+                    'dict_form': dict_form,
                     'hira': orig,
                     'hepburn': orig,
                     'alternatives': [{'hira': orig, 'hepburn': orig, 'type': 'unknown'}],
@@ -303,6 +306,7 @@ def translate_and_convert(japanese_text):
                 alternatives = _build_alternatives(orig, hira)
                 items.append({
                     'orig': orig,
+                    'dict_form': dict_form,
                     'hira': alternatives[0]['hira'],
                     'hepburn': alternatives[0]['hepburn'],
                     'alternatives': alternatives,
@@ -378,6 +382,7 @@ class ScreenFreezerApp:
         self._card_token_positions = []
         self._card_romaji_positions = []
         self._card_hover_char_idx = -1
+        self._dict_lookup_seq = 0
         self._prev_focus_hwnd = None
         self._loading_win = None
         self._overlay_hidden = False
@@ -1102,6 +1107,8 @@ class ScreenFreezerApp:
         self._selection_start = wi
         self._selection_end = wi
         self.is_dragging = True
+        self._click_time = time.time()
+        self._click_char_off = sum(len(words[j]['text']) for j in range(wi))
 
     def _box_drag(self, event, idx):
         """Drag on a box → extend word selection with visual highlight."""
@@ -1122,7 +1129,8 @@ class ScreenFreezerApp:
                w['y'] <= oy <= w['y'] + w['height']:
                 wi = i
                 break
-        if wi < 0 or wi == self._selection_end:
+        if wi < 0:
+            self._withdraw_dict_card()
             return
         self._selection_end = wi
         # Redraw selection highlight on inner canvas
@@ -1151,7 +1159,10 @@ class ScreenFreezerApp:
         end = max(self._selection_start, self._selection_end)
         words = self.ocr_boxes[idx].get('words', [])
         if start == end:
-            # Single click → clear selection (no action)
+            elapsed = time.time() - getattr(self, '_click_time', 0)
+            if elapsed < 0.1 and hasattr(self, '_click_char_off'):
+                self._card_hover_char_idx = self._click_char_off
+                self._update_dict_card()
             _, canvas2 = self._box_windows[idx][:2]
             canvas2.delete("sel_hl")
             self._selection_box_idx = -1
@@ -1186,6 +1197,260 @@ class ScreenFreezerApp:
                 return orig.strip()
             coff += len(orig)
         return None
+
+    def _get_hovered_chunk_dict_form(self):
+        """Return the dictionary form of the hovered kakasi chunk, or orig text if none, or None."""
+        if self._card_hover_char_idx < 0 or not self._card_data:
+            return None
+        ki = self._card_data.get('kakasi_items', [])
+        coff = 0
+        for item in ki:
+            orig = item.get('orig', '')
+            if coff <= self._card_hover_char_idx < coff + len(orig):
+                return item.get('dict_form', orig).strip()
+            coff += len(orig)
+        return None
+
+    def _update_dict_card(self):
+        """Start async dictionary lookup for the hovered word."""
+        if self._card_hover_char_idx < 0 or not self._card_box:
+            self._withdraw_dict_card()
+            return
+
+        word = self._get_hovered_chunk_dict_form()
+        if not word or not contains_japanese(word):
+            self._withdraw_dict_card()
+            return
+
+        card_w = max(self._card_box.get('w', 200), 200)
+        self._dict_lookup_seq += 1
+        seq = self._dict_lookup_seq
+        self._withdraw_dict_card()
+
+        import threading
+        t = threading.Thread(target=self._dict_lookup_thread, args=(word, card_w, seq), daemon=True)
+        t.start()
+
+    def _dict_lookup_thread(self, word, card_w, seq):
+        """Background thread: perform jamdict lookup and post result to main thread."""
+        try:
+            jam = _get_jam()
+            res = jam.lookup(word)
+
+            kanji_data = []
+            kanji_chars = [c for c in word if _is_kanji(c)]
+            for uk in set(kanji_chars):
+                char_obj = None
+                for c_obj in res.chars:
+                    if c_obj.literal == uk:
+                        char_obj = c_obj
+                        break
+                if not char_obj:
+                    try:
+                        char_res = jam.lookup(uk)
+                        if char_res.chars:
+                            char_obj = char_res.chars[0]
+                    except Exception:
+                        pass
+                if char_obj:
+                    kanji_data.append(char_obj)
+
+            if not res.entries and (len(word) != 1 or not res.chars):
+                self.root.after(0, self._dict_lookup_skip, seq)
+                return
+
+            self.root.after(0, self._dict_lookup_show, word, card_w, seq, res, kanji_data)
+        except Exception:
+            self.root.after(0, self._dict_lookup_skip, seq)
+
+    def _dict_lookup_show(self, word, card_w, seq, res, kanji_data):
+        """Main thread: render dict card from lookup results."""
+        if seq != self._dict_lookup_seq:
+            return
+        if self._get_hovered_chunk_dict_form() != word:
+            self._withdraw_dict_card()
+            return
+
+        if not hasattr(self, '_dict_window') or not self._dict_window:
+            self._dict_window = tk.Toplevel(self.root)
+            self._dict_window.overrideredirect(True)
+            self._dict_window.attributes("-topmost", True)
+            self._dict_canvas = tk.Canvas(self._dict_window, borderwidth=0, highlightthickness=0, bg="#ffffff")
+            self._dict_canvas.pack(fill="both", expand=True)
+            self._dict_window.bind("<Escape>", lambda e: self.unfreeze_screen())
+            try:
+                self._dict_window.update_idletasks()
+                hwnd = user32.GetAncestor(self._dict_window.winfo_id(), 2)
+                ex = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+                user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED)
+                user32.SetLayeredWindowAttributes(hwnd, 0, 0xFA, LWA_ALPHA)
+            except Exception:
+                pass
+        else:
+            try:
+                self._dict_window.deiconify()
+            except Exception:
+                pass
+
+        canvas = self._dict_canvas
+        canvas.delete("all")
+
+        title_font = ("Segoe UI", 11, "bold")
+        body_font = ("Segoe UI", 10)
+        pos_font = ("Segoe UI", 8, "italic")
+        kanji_info_font = ("Segoe UI", 9)
+
+        pad_x = 8
+        ly = 6
+        wrap_w = max(card_w - 16, 180)
+        wrap_w_inner = max(card_w - 22, 170)
+
+        canvas.create_rectangle(1, 0, card_w - 2, 0, outline="#e5e5ea", width=1, tags="border")
+
+        for entry in res.entries[:2]:
+            kanji_texts = [k.text for k in entry.kanji_forms]
+            kana_texts = [k.text for k in entry.kana_forms]
+            header = ""
+            if kanji_texts:
+                header += " / ".join(kanji_texts)
+            if kana_texts:
+                if header:
+                    header += f" ({', '.join(kana_texts)})"
+                else:
+                    header += ", ".join(kana_texts)
+
+            canvas.create_text(pad_x, ly, text=header, font=title_font, fill="#0066cc", anchor="nw", width=wrap_w)
+            est_header_lines = max(1, len(header) * 8 // wrap_w)
+            ly += est_header_lines * 18 + 4
+
+            for si, sense in enumerate(entry.senses[:3]):
+                glosses = ", ".join(g.text for g in sense.gloss)
+                pos = " • ".join(sense.pos) if sense.pos else ""
+
+                if pos:
+                    canvas.create_text(pad_x + 6, ly, text=pos, font=pos_font, fill="#8e8e93", anchor="nw", width=wrap_w_inner)
+                    est_pos_lines = max(1, len(pos) * 6 // wrap_w_inner)
+                    ly += est_pos_lines * 14 + 2
+
+                def_text = f"{si + 1}. {glosses}"
+                canvas.create_text(pad_x + 6, ly, text=def_text, font=body_font, fill="#1c1c1e", anchor="nw", width=wrap_w_inner)
+                est_def_lines = max(1, len(def_text) * 7 // wrap_w_inner)
+                ly += est_def_lines * 16 + 4
+
+        kanji_chars = [c for c in word if _is_kanji(c)]
+        if kanji_chars:
+            unique_kanjis = []
+            seen_k = set()
+            for c in kanji_chars:
+                if c not in seen_k:
+                    seen_k.add(c)
+                    unique_kanjis.append(c)
+
+            kanji_info_lines = []
+            for uk in unique_kanjis:
+                char_obj = None
+                for c_obj in kanji_data:
+                    if c_obj.literal == uk:
+                        char_obj = c_obj
+                        break
+
+                if char_obj:
+                    grade = getattr(char_obj, 'grade', None)
+                    jlpt = getattr(char_obj, 'jlpt', None)
+                    strokes = getattr(char_obj, 'stroke_count', None)
+
+                    try:
+                        if grade is not None:
+                            grade = int(grade)
+                    except (ValueError, TypeError):
+                        grade = None
+                    try:
+                        if jlpt is not None:
+                            jlpt = int(jlpt)
+                    except (ValueError, TypeError):
+                        jlpt = None
+
+                    jlpt_str = ""
+                    if jlpt is not None:
+                        if jlpt == 4:
+                            jlpt_str = "N5"
+                        elif jlpt == 3:
+                            jlpt_str = "N4"
+                        elif jlpt == 2:
+                            jlpt_str = "N3/N2"
+                        elif jlpt == 1:
+                            jlpt_str = "N1"
+                        else:
+                            jlpt_str = f"L{jlpt}"
+
+                    parts = []
+                    if jlpt_str:
+                        parts.append(f"JLPT: {jlpt_str}")
+                    if grade is not None:
+                        grade_str = f"G{grade}"
+                        if 1 <= grade <= 6:
+                            grade_str += " (Elem)"
+                        elif grade == 8:
+                            grade_str += " (Sec)"
+                        parts.append(f"Grade: {grade_str}")
+                    if strokes is not None:
+                        parts.append(f"{strokes} strokes")
+
+                    info_text = f"{uk} : " + ", ".join(parts) if parts else f"{uk}"
+                    kanji_info_lines.append(info_text)
+
+            if kanji_info_lines:
+                ly += 2
+                canvas.create_line(pad_x, ly, card_w - pad_x, ly, fill="#e5e5ea")
+                ly += 6
+                canvas.create_text(pad_x, ly, text="Kanji Info:", font=("Segoe UI", 9, "bold"), fill="#8e8e93", anchor="nw")
+                ly += 16
+                for kil in kanji_info_lines:
+                    canvas.create_text(pad_x + 6, ly, text=kil, font=kanji_info_font, fill="#3a3a3c", anchor="nw", width=wrap_w_inner)
+                    est_kil_lines = max(1, len(kil) * 7 // wrap_w_inner)
+                    ly += est_kil_lines * 15 + 2
+
+        dict_h = ly + 8
+        dict_x = self.overlay_x
+        dict_y = self.overlay_y + self.overlay_h + 4
+
+        screen_limit_y = 1080
+        try:
+            screen_limit_y = self.root.winfo_screenheight()
+        except Exception:
+            pass
+        if dict_y + dict_h > screen_limit_y - 8:
+            dict_y = self.overlay_y - dict_h - 4
+            if dict_y < 8:
+                dict_y = self.overlay_y + self.overlay_h + 4
+
+        self._dict_window.geometry(f"{card_w}x{dict_h}+{dict_x}+{dict_y}")
+        self._dict_window.lift()
+        canvas.configure(height=dict_h, width=card_w)
+        canvas.create_rectangle(1, 1, card_w - 2, dict_h - 2, outline="#e5e5ea", width=1, tags="border_box")
+
+    def _dict_lookup_skip(self, seq):
+        """Main thread: skip dict card (no useful results)."""
+        if seq == self._dict_lookup_seq:
+            self._withdraw_dict_card()
+
+    def _withdraw_dict_card(self):
+        """Withdraw the dictionary card (keep window alive, just hide)."""
+        if hasattr(self, '_dict_window') and self._dict_window:
+            try:
+                self._dict_window.withdraw()
+            except Exception:
+                pass
+
+    def _hide_dict_card(self):
+        """Destroy the dictionary card permanently."""
+        if hasattr(self, '_dict_window') and self._dict_window:
+            try:
+                self._dict_window.destroy()
+            except Exception:
+                pass
+            self._dict_window = None
+            self._dict_canvas = None
 
     def _get_action_text(self, idx):
         """Return selected text, or hovered chunk text, or None."""
@@ -1524,6 +1789,7 @@ class ScreenFreezerApp:
 
     def _hide_card(self):
         """Destroy the card Toplevel if visible."""
+        self._hide_dict_card()
         if self._card_window:
             try:
                 self._card_window.destroy()
@@ -1576,6 +1842,7 @@ class ScreenFreezerApp:
             return
         self.active = False
         self._destroy_box_windows()
+        self._hide_dict_card()
         if hasattr(self, 'snip_window') and self.snip_window:
             self._close_snip()
         if hasattr(self, 'active_window') and self.active_window:
@@ -1629,12 +1896,22 @@ class ScreenFreezerApp:
                 all_hwnds.add(user32.GetAncestor(self._card_window.winfo_id(), 2))
             except Exception:
                 pass
+        if hasattr(self, '_dict_window') and self._dict_window:
+            try:
+                all_hwnds.add(user32.GetAncestor(self._dict_window.winfo_id(), 2))
+            except Exception:
+                pass
         if fg not in all_hwnds:
             if not self._overlay_hidden:
                 self._overlay_hidden = True
                 for win, _, _ in self._box_windows:
                     try:
                         win.withdraw()
+                    except Exception:
+                        pass
+                if hasattr(self, '_dict_window') and self._dict_window:
+                    try:
+                        self._dict_window.withdraw()
                     except Exception:
                         pass
                 self._hide_card()
@@ -1644,6 +1921,11 @@ class ScreenFreezerApp:
                 for win, _, _ in self._box_windows:
                     try:
                         win.deiconify()
+                    except Exception:
+                        pass
+                if hasattr(self, '_dict_window') and self._dict_window:
+                    try:
+                        self._dict_window.deiconify()
                     except Exception:
                         pass
         self.root.after(500, self.check_focus)
