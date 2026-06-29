@@ -145,7 +145,13 @@ def _get_sudachi():
     return _sudachi_local.tokenizer
 
 kks = pykakasi.kakasi()
-jam = Jamdict()
+
+# Jamdict's SQLite connection is NOT thread-safe → use thread-local instances
+_jam_local = threading.local()
+def _get_jam():
+    if not hasattr(_jam_local, 'jam'):
+        _jam_local.jam = Jamdict()
+    return _jam_local.jam
 
 def contains_japanese(text):
     """Check if the text contains any Japanese characters (Hiragana, Katakana, Kanji)."""
@@ -186,7 +192,7 @@ def _build_alternatives(orig, sudachi_hira):
     # Jamdict lookups
     if any(_is_kanji(c) for c in orig):
         try:
-            jam_result = jam.lookup(orig)
+            jam_result = _get_jam().lookup(orig)
 
             # 1. JMDict whole-word readings
             for entry in jam_result.entries:
@@ -198,13 +204,13 @@ def _build_alternatives(orig, sudachi_hira):
             # 2. KanjiDic2 per-character readings
             for ch in jam_result.chars:
                 lit = ch.literal
-                if lit is None:
+                if lit is None or lit not in orig:
                     continue
                 for g in ch.rm_groups:
                     for r in g.on_readings:
-                        _add(jaconv.kata2hira(r))
+                        _add(jaconv.kata2hira(str(r)))
                     for r in g.kun_readings:
-                        clean = jaconv.kata2hira(r).split('.')[0].replace('-', '')
+                        clean = jaconv.kata2hira(str(r)).split('.')[0].replace('-', '')
                         if clean:
                             _add(clean)
                 if hasattr(ch, 'nanoris') and ch.nanoris:
