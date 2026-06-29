@@ -166,8 +166,17 @@ def _is_kanji(ch):
     """Check if a character is a CJK ideograph."""
     return '\u4e00' <= ch <= '\u9faf'
 
+def _is_kana(ch):
+    """Check if a character is Hiragana or Katakana."""
+    return '\u3040' <= ch <= '\u30ff'
+
 def _build_alternatives(orig, sudachi_hira):
     """Build list of alternative readings for a token using jamdict."""
+    # Non-kanji tokens (kana/punctuation/symbols): no alternatives needed
+    if not any(_is_kanji(c) for c in orig):
+        h_hepburn = " ".join([r['hepburn'] for r in kks.convert(sudachi_hira)])
+        return [{'hira': sudachi_hira, 'hepburn': h_hepburn, 'type': 'unknown'}]
+
     alts = []
     seen = set()
     def _add(h, rtype='unknown'):
@@ -255,14 +264,34 @@ def translate_and_convert(japanese_text):
             orig = token.surface()
             reading = token.reading_form()
             hira = jaconv.kata2hira(reading) if reading else orig
-            alternatives = _build_alternatives(orig, hira)
-            items.append({
-                'orig': orig,
-                'hira': alternatives[0]['hira'],
-                'hepburn': alternatives[0]['hepburn'],
-                'alternatives': alternatives,
-                'active_idx': 0,
-            })
+            if any(_is_kanji(c) for c in orig):
+                alternatives = _build_alternatives(orig, hira)
+                items.append({
+                    'orig': orig,
+                    'hira': alternatives[0]['hira'],
+                    'hepburn': alternatives[0]['hepburn'],
+                    'alternatives': alternatives,
+                    'active_idx': 0,
+                })
+            elif not any(_is_kana(c) for c in orig):
+                # Pure symbols/punctuation (no kana): show original character
+                items.append({
+                    'orig': orig,
+                    'hira': orig,
+                    'hepburn': orig,
+                    'alternatives': [{'hira': orig, 'hepburn': orig, 'type': 'unknown'}],
+                    'active_idx': 0,
+                })
+            else:
+                # Kana-only tokens: convert to romaji normally
+                alternatives = _build_alternatives(orig, hira)
+                items.append({
+                    'orig': orig,
+                    'hira': alternatives[0]['hira'],
+                    'hepburn': alternatives[0]['hepburn'],
+                    'alternatives': alternatives,
+                    'active_idx': 0,
+                })
         romaji = " ".join([item['hepburn'] for item in items])
         kana = " ".join([item['hira'] if item['hira'] else item['orig'] for item in items])
         
