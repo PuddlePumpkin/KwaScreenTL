@@ -1089,6 +1089,7 @@ class ScreenFreezerApp:
         self._hover_fg_items = {}  # chunk_idx → canvas item id
         self._hover_card_x = x
         self._hover_pad_x = pad_x
+        self._hover_romaji_chunks = []  # per-chunk {x, w} for highlight rect
         for item in ki:
             orig = item.get('orig', '')
             hira = item.get('hira') or orig
@@ -1115,8 +1116,9 @@ class ScreenFreezerApp:
         romaji_y = fg_y + fg_line_h + 2
         eng_y = romaji_y + 18 if self.show_romaji else fg_y + fg_line_h + 2
 
-        # Romaji text
+        # Romaji text (single text item + per-chunk position tracking for highlight)
         self._hover_romaji_id = None
+        self._hover_romaji_y = romaji_y
         if self.show_romaji:
             self._hover_romaji_id = self.canvas.create_text(
                 x + pad_x, romaji_y, text=data['romaji'],
@@ -1124,6 +1126,14 @@ class ScreenFreezerApp:
                 fill="#0066cc", anchor="nw"
             )
             self._hover_card_items.append(self._hover_romaji_id)
+            # Compute per-chunk romaji x/w for highlight rect
+            rf = tkfont.Font(family="Segoe UI", size=max(7, self.font_size_en - 2), slant="italic")
+            rfx = x + pad_x
+            for item in ki:
+                rt = item.get('hepburn', '') or item.get('orig', '')
+                rw = rf.measure(rt)
+                self._hover_romaji_chunks.append({'x': rfx, 'w': rw})
+                rfx += rw + rf.measure(' ')
 
         # Store furigana bounds for scroll hit detection
         self._hover_fg_y = fg_y
@@ -1254,7 +1264,7 @@ class ScreenFreezerApp:
         self._clear_hover_tags()
         if char_idx < 0 or not hasattr(self, '_hover_hl_y'):
             return
-        for cp in self._hover_chunk_positions:
+        for i, cp in enumerate(self._hover_chunk_positions):
             if cp['char_start'] <= char_idx < cp['char_end']:
                 hl = self.canvas.create_rectangle(
                     cp['x'], self._hover_hl_y,
@@ -1264,6 +1274,17 @@ class ScreenFreezerApp:
                 self._hover_card_hl_items.append(hl)
                 if self._hover_card_bg_id is not None:
                     self.canvas.lift(hl, self._hover_card_bg_id)
+                # Highlight matching romaji chunk
+                if self.show_romaji and i < len(self._hover_romaji_chunks):
+                    rc = self._hover_romaji_chunks[i]
+                    hl2 = self.canvas.create_rectangle(
+                        rc['x'], self._hover_romaji_y,
+                        rc['x'] + rc['w'], self._hover_romaji_y + 16,
+                        fill="#ffe082", outline=""
+                    )
+                    self._hover_card_hl_items.append(hl2)
+                    if self._hover_card_bg_id is not None:
+                        self.canvas.lift(hl2, self._hover_card_bg_id)
                 break
 
     # ── Word-level selection & clipboard ──────────────────────────────────────
