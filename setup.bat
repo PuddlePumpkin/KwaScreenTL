@@ -10,6 +10,9 @@ echo Installing dependencies...
 "%VENV_DIR%\Scripts\pip" install -r requirements.txt
 "%VENV_DIR%\Scripts\pip" install paddleocr
 
+echo Downloading Jamdict database (~120MB, first launch only)...
+"%VENV_DIR%\Scripts\python" -c "from jamdict import Jamdict; Jamdict(); print('Jamdict ready.')"
+
 echo.
 echo ============================================
 echo Setup complete!
