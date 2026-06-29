@@ -5,6 +5,7 @@ pykakasi
 sudachipy
 sudachidict_core
 jaconv
+jamdict
 deep-translator
 edge-tts
 paddleocr

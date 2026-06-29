@@ -59,6 +59,7 @@ import onnxruntime  # must precede winocr to avoid WinRT DLL conflict
 import winocr
 import jaconv
 import pykakasi
+from jamdict import Jamdict
 from sudachipy import Dictionary, SplitMode
 from deep_translator import GoogleTranslator
 from concurrent.futures import ThreadPoolExecutor
@@ -136,32 +137,15 @@ def capture_moused_monitor():
                 return sct.grab(monitor), monitor
         return sct.grab(sct.monitors[1]), sct.monitors[1]
 
-# Initialize SudachiPy globally for context-aware readings (thread-safe)
-# We keep pykakasi for kana→romaji conversion only (no ambiguity there)
-sudachi = Dictionary().create()
+# SudachiPy's Rust tokenizer is NOT thread-safe → use thread-local instances
+_sudachi_local = threading.local()
+def _get_sudachi():
+    if not hasattr(_sudachi_local, 'tokenizer'):
+        _sudachi_local.tokenizer = Dictionary().create()
+    return _sudachi_local.tokenizer
+
 kks = pykakasi.kakasi()
-
-# ── Furigana override map ────────────────────────────────────────────────────
-# Maps token surface → list of additional readings to include as alternatives.
-# Users can edit furigana_overrides.json to add game-specific readings.
-OVERRIDE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "furigana_overrides.json")
-FURIGANA_OVERRIDES = {}
-def _load_overrides():
-    global FURIGANA_OVERRIDES
-    try:
-        if os.path.isfile(OVERRIDE_FILE):
-            with open(OVERRIDE_FILE, "r", encoding="utf-8") as f:
-                FURIGANA_OVERRIDES = json.load(f)
-    except Exception as e:
-        print(f"[OVERRIDE] Failed to load: {e}")
-_load_overrides()
-
-def _save_overrides():
-    try:
-        with open(OVERRIDE_FILE, "w", encoding="utf-8") as f:
-            json.dump(FURIGANA_OVERRIDES, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"[OVERRIDE] Failed to save: {e}")
+jam = Jamdict()
 
 def contains_japanese(text):
     """Check if the text contains any Japanese characters (Hiragana, Katakana, Kanji)."""
@@ -172,8 +156,12 @@ def contains_japanese(text):
     pattern = re.compile(r'[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9faf]')
     return bool(pattern.search(text))
 
+def _is_kanji(ch):
+    """Check if a character is a CJK ideograph."""
+    return '\u4e00' <= ch <= '\u9faf'
+
 def _build_alternatives(orig, sudachi_hira):
-    """Build list of alternative readings for a token."""
+    """Build list of alternative readings for a token using jamdict."""
     alts = []
     seen = set()
     def _add(h):
@@ -182,7 +170,10 @@ def _build_alternatives(orig, sudachi_hira):
         seen.add(h)
         h_hepburn = " ".join([r['hepburn'] for r in kks.convert(h)])
         alts.append({'hira': h, 'hepburn': h_hepburn})
+
     _add(sudachi_hira)
+
+    # pykakasi reading (dictionary-based fallback)
     try:
         pk = kks.convert(orig)
         pk_hira = " ".join([i['hira'] if i['hira'] else i['orig'] for i in pk])
@@ -191,8 +182,37 @@ def _build_alternatives(orig, sudachi_hira):
             _add(pk_hira_norm)
     except Exception:
         pass
-    for r in FURIGANA_OVERRIDES.get(orig, []):
-        _add(r)
+
+    # Jamdict lookups
+    if any(_is_kanji(c) for c in orig):
+        try:
+            jam_result = jam.lookup(orig)
+
+            # 1. JMDict whole-word readings
+            for entry in jam_result.entries:
+                for kf in entry.kana_forms:
+                    r = jaconv.kata2hira(kf.text) if kf.text else ''
+                    if r:
+                        _add(r)
+
+            # 2. KanjiDic2 per-character readings
+            for ch in jam_result.chars:
+                lit = ch.literal
+                if lit is None:
+                    continue
+                for g in ch.rm_groups:
+                    for r in g.on_readings:
+                        _add(jaconv.kata2hira(r))
+                    for r in g.kun_readings:
+                        clean = jaconv.kata2hira(r).split('.')[0].replace('-', '')
+                        if clean:
+                            _add(clean)
+                if hasattr(ch, 'nanoris') and ch.nanoris:
+                    for n in ch.nanoris:
+                        _add(jaconv.kata2hira(str(n)))
+        except Exception:
+            pass
+
     return alts
 
 def translate_and_convert(japanese_text):
@@ -200,7 +220,7 @@ def translate_and_convert(japanese_text):
     print(f"[TRANSLATE] input='{japanese_text}'")
     try:
         # Use SudachiPy (Mode C = longest natural chunks) for context-aware readings
-        tokens = sudachi.tokenize(japanese_text, SplitMode.C)
+        tokens = _get_sudachi().tokenize(japanese_text, SplitMode.C)
         items = []
         for token in tokens:
             orig = token.surface()
