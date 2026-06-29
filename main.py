@@ -1120,7 +1120,7 @@ class ScreenFreezerApp:
                 'char_end': char_off + len(orig),
             }
             self._hover_chunk_positions.append(cp)
-            if orig != hira:
+            if orig != hira and any(_is_kanji(c) for c in orig):
                 cx = x + pad_x + prefix_w + group_w / 2
                 fg_id = self.canvas.create_text(
                     cx, fg_y, text=hira, font=ff, fill="#248a3d", anchor="n"
