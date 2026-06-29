@@ -1192,6 +1192,19 @@ class ScreenFreezerApp:
         box['data']['romaji'] = new_romaji
         if self._hover_romaji_id is not None:
             self.canvas.itemconfig(self._hover_romaji_id, text=new_romaji)
+            # Recompute romaji chunk positions for accurate highlight
+            rf = tkfont.Font(family="Segoe UI", size=max(7, self.font_size_en - 2), slant="italic")
+            rfx = self._hover_card_x + self._hover_pad_x
+            self._hover_romaji_chunks = []
+            for it in ki:
+                rt = it.get('hepburn', '') or it.get('orig', '')
+                rw = rf.measure(rt)
+                self._hover_romaji_chunks.append({'x': rfx, 'w': rw})
+                rfx += rw + rf.measure(' ')
+            # Refresh highlight rects with new positions
+            self.update_hover_highlights(
+                self.ocr_boxes[self.current_hover_idx], self._hover_word_idx
+            )
 
 
     def _build_item_ranges(self, items):
