@@ -50,10 +50,7 @@ CROP_RIGHT = 10
 BOX_PAD = 2
 BORDER_WIDTH = 5
 
-FONT_CHOICES = ["Yu Gothic UI", "Yu Gothic", "Meiryo", "MS Gothic", "MS Mincho", "Segoe UI"]
-DEFAULT_FONT = "Yu Gothic UI"
-FONT_SIZES = [16, 18, 20, 22, 24, 26, 28, 32]
-DEFAULT_FONT_SIZE = 22
+
 
 import tkinter as tk
 import tkinter.font as tkfont
@@ -81,7 +78,7 @@ def get_deepl_api_key():
             with open(key_path, "r") as f:
                 _deepl_api_key = f.read().strip()
         except Exception as e:
-            print(f"Failed to read DeepL API key from {key_path}: {e}")
+            pass
             _deepl_api_key = ""
     return _deepl_api_key
 
@@ -92,7 +89,6 @@ def get_paddle_ocr():
     global _paddle_ocr
     if _paddle_ocr is None:
         from paddleocr import PaddleOCR
-        print("[PaddleOCR] Loading models... (first load may download ~200MB)")
         _paddle_ocr = PaddleOCR(
             lang='japan', engine='onnxruntime',
             use_doc_orientation_classify=False,
@@ -100,7 +96,7 @@ def get_paddle_ocr():
             use_textline_orientation=False,
             return_word_box=True,
         )
-        print("[PaddleOCR] Ready.")
+        pass
     return _paddle_ocr
 
 def translate_deepl(text):
@@ -164,10 +160,35 @@ kks = pykakasi.kakasi()
 
 # Jamdict's SQLite connection is NOT thread-safe → use thread-local instances
 _jam_local = threading.local()
+_jam_db_path = None
 def _get_jam():
+    global _jam_db_path
     if not hasattr(_jam_local, 'jam'):
         _jam_local.jam = Jamdict()
+        if _jam_db_path is None:
+            _jam_db_path = getattr(_jam_local.jam, '_Jamdict__db_file', None)
     return _jam_local.jam
+
+def _get_english_meanings(literal):
+    """Query jamdict SQLite directly for English-only kanji meanings."""
+    db = _jam_db_path
+    if not db:
+        return []
+    try:
+        import sqlite3
+        conn = sqlite3.connect(db)
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT DISTINCT m.value FROM meaning m
+            JOIN rm_group g ON m.gid = g.ID
+            JOIN character c ON g.cid = c.ID
+            WHERE c.literal = ? AND (m.m_lang IS NULL OR m.m_lang = '')
+        """, (literal,))
+        res = [row[0] for row in cur.fetchall()]
+        conn.close()
+        return res
+    except Exception:
+        return []
 
 def contains_japanese(text):
     """Check if the text contains any Japanese characters (Hiragana, Katakana, Kanji)."""
@@ -269,9 +290,8 @@ def _build_alternatives(orig, sudachi_hira):
 
     return alts
 
-def translate_and_convert(japanese_text):
+def translate_and_convert(japanese_text, do_translate=True):
     """Convert Japanese to Romaji, Hiragana, and English translation."""
-    print(f"[TRANSLATE] input='{japanese_text}'")
     try:
         # Use SudachiPy (Mode C = longest natural chunks) for context-aware readings
         tokens = _get_sudachi().tokenize(japanese_text, SplitMode.C)
@@ -316,10 +336,13 @@ def translate_and_convert(japanese_text):
         kana = " ".join([item['hira'] if item['hira'] else item['orig'] for item in items])
         
         # Translate to English
-        if TRANSLATOR == "deepl":
-            english = translate_deepl(japanese_text)
+        if do_translate:
+            if TRANSLATOR == "deepl":
+                english = translate_deepl(japanese_text)
+            else:
+                english = GoogleTranslator(source='ja', target='en').translate(japanese_text)
         else:
-            english = GoogleTranslator(source='ja', target='en').translate(japanese_text)
+            english = ""
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -382,6 +405,7 @@ class ScreenFreezerApp:
         self._card_token_positions = []
         self._card_romaji_positions = []
         self._card_hover_char_idx = -1
+        self._card_xy = None
         self._dict_lookup_seq = 0
         self._ctrl_held = False
         self._prev_focus_hwnd = None
@@ -390,41 +414,21 @@ class ScreenFreezerApp:
         self._selection_box_idx = -1
         self._selection_start = -1
         self._selection_end = -1
+        self.show_crop = True
+        self.show_romaji = True
+        self.skip_non_japanese = SKIP_NON_JAPANESE
+        self.show_translation = True
+        self.japanese_font = "Meiryo"
+        self.japanese_font_size = 16
+        self.font_size_en = 10
         self._settings_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
-        self.japanese_font = DEFAULT_FONT
-        self.japanese_font_size = DEFAULT_FONT_SIZE
-        self.font_size_en = 11
-        self._load_settings()
         self._settings_window = None
+        self._load_settings()
         
         # Start checking the queue for trigger events or translation results
         self.root.after(100, self.check_queue)
 
-    def _load_settings(self):
-        defaults = {"show_crop": True, "show_romaji": True, "skip_non_japanese": SKIP_NON_JAPANESE}
-        try:
-            with open(self._settings_file, "r") as f:
-                data = json.load(f)
-            for k, v in defaults.items():
-                setattr(self, k, data.get(k, v))
-            self.japanese_font = data.get("japanese_font", DEFAULT_FONT)
-            self.japanese_font_size = data.get("japanese_font_size", DEFAULT_FONT_SIZE)
-            self.font_size_en = data.get("font_size_en", 11)
-        except (FileNotFoundError, json.JSONDecodeError):
-            for k, v in defaults.items():
-                setattr(self, k, v)
 
-    def _save_settings(self):
-        data = {
-            "show_crop": self.show_crop,
-            "show_romaji": self.show_romaji,
-            "skip_non_japanese": self.skip_non_japanese,
-            "japanese_font": self.japanese_font,
-            "japanese_font_size": self.japanese_font_size,
-            "font_size_en": self.font_size_en,
-        }
-        with open(self._settings_file, "w") as f:
-            json.dump(data, f)
 
     def check_queue(self):
         try:
@@ -454,6 +458,27 @@ class ScreenFreezerApp:
     def trigger_settings(self):
         self.msg_queue.put(("toggle_settings", None))
 
+    def _load_settings(self):
+        try:
+            with open(self._settings_file, "r") as f:
+                data = json.load(f)
+            self.show_crop = data.get("show_crop", True)
+            self.show_romaji = data.get("show_romaji", True)
+            self.skip_non_japanese = data.get("skip_non_japanese", SKIP_NON_JAPANESE)
+            self.show_translation = data.get("show_translation", True)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+
+    def _save_settings(self):
+        data = {
+            "show_crop": self.show_crop,
+            "show_romaji": self.show_romaji,
+            "skip_non_japanese": self.skip_non_japanese,
+            "show_translation": self.show_translation,
+        }
+        with open(self._settings_file, "w") as f:
+            json.dump(data, f)
+
     def toggle_settings(self):
         if self._settings_window and self._settings_window.winfo_exists():
             self._settings_window.destroy()
@@ -468,83 +493,48 @@ class ScreenFreezerApp:
         self._show_crop_var = tk.BooleanVar(value=self.show_crop)
         self._show_romaji_var = tk.BooleanVar(value=self.show_romaji)
         self._skip_nj_var = tk.BooleanVar(value=self.skip_non_japanese)
+        self._show_translation_var = tk.BooleanVar(value=self.show_translation)
 
-        def on_crop_toggle():
+        def on_toggle():
+            old_translation = self.show_translation
             self.show_crop = self._show_crop_var.get()
-            self._save_settings()
-            self._refresh_hover_card()
-
-        def on_romaji_toggle():
             self.show_romaji = self._show_romaji_var.get()
-            self._save_settings()
-            self._refresh_hover_card()
-
-        def on_skip_nj_toggle():
             self.skip_non_japanese = self._skip_nj_var.get()
+            self.show_translation = self._show_translation_var.get()
             self._save_settings()
-
-        def on_font_change(*_):
-            self.japanese_font = self._font_var.get()
-            self._save_settings()
-            self._refresh_hover_card()
-
-        def on_font_size_change(*_):
-            self.japanese_font_size = int(self._font_size_var.get())
-            self._save_settings()
-            self._refresh_hover_card()
-
-        def on_font_size_en_change(*_):
-            self.font_size_en = int(self._font_size_en_var.get())
-            self._save_settings()
-            self._refresh_hover_card()
+            if old_translation != self.show_translation:
+                if self.show_translation:
+                    self._retranslate_boxes()
+                else:
+                    for box in self.ocr_boxes:
+                        box['data']['english'] = ""
+                    self._refresh_hover_card()
+            else:
+                self._refresh_hover_card()
 
         pad = {"padx": 12, "pady": 3}
         tk.Label(win, text="Hover Card", font=("Segoe UI", 9, "bold"),
                  anchor="w").pack(fill="x", padx=12, pady=(10, 2))
         sep = tk.Frame(win, height=1, bg="#c0c0c0")
         sep.pack(fill="x", padx=12)
-        tk.Checkbutton(win, text="Show cropped image", variable=self._show_crop_var,
-                       command=on_crop_toggle).pack(anchor="w", **pad)
         tk.Checkbutton(win, text="Show romaji", variable=self._show_romaji_var,
-                       command=on_romaji_toggle).pack(anchor="w", **pad)
+                       command=on_toggle).pack(anchor="w", **pad)
+        tk.Checkbutton(win, text="Show translation", variable=self._show_translation_var,
+                       command=on_toggle).pack(anchor="w", **pad)
 
         tk.Label(win, text="OCR Filter", font=("Segoe UI", 9, "bold"),
                  anchor="w").pack(fill="x", padx=12, pady=(10, 2))
         sep2 = tk.Frame(win, height=1, bg="#c0c0c0")
         sep2.pack(fill="x", padx=12)
         tk.Checkbutton(win, text="Skip non-Japanese text", variable=self._skip_nj_var,
-                       command=on_skip_nj_toggle).pack(anchor="w", **pad)
+                       command=on_toggle).pack(anchor="w", **pad)
 
-        tk.Label(win, text="Japanese Font", font=("Segoe UI", 9, "bold"),
+        tk.Label(win, text="Debug", font=("Segoe UI", 9, "bold"),
                  anchor="w").pack(fill="x", padx=12, pady=(10, 2))
         sep3 = tk.Frame(win, height=1, bg="#c0c0c0")
         sep3.pack(fill="x", padx=12)
-        self._font_var = tk.StringVar(value=self.japanese_font)
-        self._font_var.trace("w", on_font_change)
-        om = tk.OptionMenu(win, self._font_var, *FONT_CHOICES)
-        om.config(width=20)
-        om.pack(anchor="w", **pad)
-
-        tk.Label(win, text="Font Size (pt)", font=("Segoe UI", 9, "bold"),
-                 anchor="w").pack(fill="x", padx=12, pady=(10, 2))
-        sep4 = tk.Frame(win, height=1, bg="#c0c0c0")
-        sep4.pack(fill="x", padx=12)
-        self._font_size_var = tk.StringVar(value=str(self.japanese_font_size))
-        self._font_size_var.trace("w", on_font_size_change)
-        om2 = tk.OptionMenu(win, self._font_size_var, *[str(s) for s in FONT_SIZES])
-        om2.config(width=20)
-        om2.pack(anchor="w", **pad)
-
-        tk.Label(win, text="Font Size EN (pt)", font=("Segoe UI", 9, "bold"),
-                 anchor="w").pack(fill="x", padx=12, pady=(10, 2))
-        sep5 = tk.Frame(win, height=1, bg="#c0c0c0")
-        sep5.pack(fill="x", padx=12)
-        self._font_size_en_var = tk.StringVar(value=str(self.font_size_en))
-        self._font_size_en_var.trace("w", on_font_size_en_change)
-        EN_FONT_SIZES = [9, 10, 11, 12, 13, 14, 16, 18]
-        om3 = tk.OptionMenu(win, self._font_size_en_var, *[str(s) for s in EN_FONT_SIZES])
-        om3.config(width=20)
-        om3.pack(anchor="w", **pad)
+        tk.Checkbutton(win, text="Show cropped image", variable=self._show_crop_var,
+                       command=on_toggle).pack(anchor="w", **pad)
 
         win.update_idletasks()
         win.geometry(f"{win.winfo_reqwidth()}x{win.winfo_reqheight()}")
@@ -557,6 +547,24 @@ class ScreenFreezerApp:
         self._hide_card()
         if self.current_hover_idx >= 0 and self.current_hover_idx < len(self.ocr_boxes):
             self._show_card(self.current_hover_idx)
+
+    def _retranslate_boxes(self):
+        """Re-translate all OCR boxes whose english field is empty."""
+        boxes = list(self.ocr_boxes)
+        def _do():
+            for box in boxes:
+                text = box['data'].get('original', '')
+                if text and not box['data'].get('english'):
+                    try:
+                        if TRANSLATOR == "deepl":
+                            eng = translate_deepl(text)
+                        else:
+                            eng = GoogleTranslator(source='ja', target='en').translate(text)
+                        box['data']['english'] = eng
+                    except Exception:
+                        pass
+            self.root.after(0, self._refresh_hover_card)
+        threading.Thread(target=_do, daemon=True).start()
 
     def freeze_screen(self):
         if self.active:
@@ -890,7 +898,6 @@ class ScreenFreezerApp:
             translation_targets = []
             for line in lines:
                 text = line.get('text', '').strip()
-                print(f"[OCR RAW] '{text}'")
                 bbox = get_line_bounding_rect(line)
 
                 words_data = []
@@ -912,15 +919,15 @@ class ScreenFreezerApp:
                 if not text:
                     continue
                 if self.skip_non_japanese and not contains_japanese(text):
-                    print(f"[OCR SKIP] '{text}' (no Japanese chars)")
                     continue
                 translation_targets.append((text, bbox, crop_pil, words_data))
 
             # Fetch translations in parallel
             boxes = []
             with ThreadPoolExecutor(max_workers=8) as executor:
+                do_translate = self.show_translation
                 futures = {
-                    executor.submit(translate_and_convert, text): (bbox, crop_pil, words_data)
+                    executor.submit(translate_and_convert, text, do_translate): (bbox, crop_pil, words_data)
                     for text, bbox, crop_pil, words_data in translation_targets
                 }
                 for future in futures:
@@ -953,13 +960,13 @@ class ScreenFreezerApp:
                             'crop_pil': crop_pil,
                             'words': words_data
                         })
-                    except Exception as e:
-                        print("Error processing translation:", e)
+                    except Exception:
+                        pass
 
             # Post result back to main GUI thread
             self.msg_queue.put(("ocr_complete", boxes))
-        except Exception as e:
-            print("OCR process failed:", e)
+        except Exception:
+            pass
             self.msg_queue.put(("ocr_complete", []))
 
     def display_translations(self, boxes):
@@ -1164,7 +1171,7 @@ class ScreenFreezerApp:
             if elapsed < 0.1 and hasattr(self, '_click_char_off'):
                 self._card_hover_char_idx = self._click_char_off
                 ctrl = bool(event.state & 4)
-                print(f"[DICT DEBUG] box_release click: elapsed={elapsed:.3f}s char_off={self._click_char_off} ctrl={ctrl} state={event.state}")
+                pass
                 self._update_dict_card(single_char=ctrl)
             _, canvas2 = self._box_windows[idx][:2]
             canvas2.delete("sel_hl")
@@ -1237,7 +1244,6 @@ class ScreenFreezerApp:
             return
 
         word = self._get_hovered_single_char() if single_char else self._get_hovered_chunk_dict_form()
-        print(f"[DICT DEBUG] _update_dict_card: single_char={single_char} hover_idx={self._card_hover_char_idx} word='{word}'")
         if not word or not contains_japanese(word):
             self._withdraw_dict_card()
             return
@@ -1288,7 +1294,6 @@ class ScreenFreezerApp:
         if seq != self._dict_lookup_seq:
             return
         current = self._get_hovered_single_char() if single_char else self._get_hovered_chunk_dict_form()
-        print(f"[DICT DEBUG] _dict_lookup_show: word='{word}' single_char={single_char} current='{current}'")
         if current != word:
             self._withdraw_dict_card()
             return
@@ -1433,6 +1438,30 @@ class ScreenFreezerApp:
                     info_text = f"{uk} : " + ", ".join(parts) if parts else f"{uk}"
                     kanji_info_lines.append(info_text)
 
+                    try:
+                        eng = _get_english_meanings(uk)
+                        if eng:
+                            kanji_info_lines.append(f"  Meanings: {', '.join(eng)}")
+                    except Exception:
+                        pass
+
+                    try:
+                        rm_groups = getattr(char_obj, 'rm_groups', [])
+                        if rm_groups:
+                            on_all = []
+                            kun_all = []
+                            for g in rm_groups:
+                                for r in getattr(g, 'on_readings', []) or []:
+                                    on_all.append(str(r))
+                                for r in getattr(g, 'kun_readings', []) or []:
+                                    kun_all.append(str(r))
+                            if on_all:
+                                kanji_info_lines.append(f"  On: {' • '.join(on_all)}")
+                            if kun_all:
+                                kanji_info_lines.append(f"  Kun: {' • '.join(kun_all)}")
+                    except Exception:
+                        pass
+
             if kanji_info_lines:
                 ly += 2
                 canvas.create_line(pad_x, ly, card_w - pad_x, ly, fill="#e5e5ea")
@@ -1567,23 +1596,25 @@ class ScreenFreezerApp:
         if screen_x + card_w > screen_limit:
             screen_x = screen_limit - card_w - 8
 
-        # Estimate card height (+ padding)
+        # Estimate card height (+ padding) — must match _render_card layout
         en_font = tkfont.Font(family="Segoe UI", size=self.font_size_en, weight="bold")
-        top_pad = 8
-        content_h = top_pad
+        content_h = 0
         if self.show_crop and box.get('crop_pil'):
-            content_h += box['crop_pil'].height + 24
+            content_h += 3 + box['crop_pil'].height + 24
+        else:
+            content_h += 8
         line_h = max(30, kf.metrics("linespace"))
-        content_h += line_h + 2  # Japanese text
+        content_h += line_h  # Japanese text
         furigana_size = max(8, self.japanese_font_size // 2 - 1)
         ff_temp = tkfont.Font(family=self.japanese_font, size=furigana_size)
-        content_h += ff_temp.metrics("linespace") + 2  # furigana
+        content_h += ff_temp.metrics("linespace") + 2  # furigana + gap
         if self.show_romaji:
             content_h += 18 + 2
-        est_chars = max(1, (card_w - 16) // 7)
-        en_lines = max(1, -(-len(data['english']) // est_chars))
-        content_h += en_lines * en_font.metrics("linespace")
-        content_h += 6
+        if self.show_translation:
+            est_chars = max(1, (card_w - 16) // 7)
+            en_lines = max(1, -(-len(data.get('english', '')) // est_chars))
+            content_h += en_lines * en_font.metrics("linespace")
+            content_h += 6
         card_h = content_h
 
         # Place card above the box (or below if not enough room)
@@ -1606,6 +1637,7 @@ class ScreenFreezerApp:
 
         self._card_window = win
         self._card_canvas = canvas
+        self._card_xy = (screen_x, card_top)
         self._render_card()
 
     def _render_card(self):
@@ -1689,17 +1721,21 @@ class ScreenFreezerApp:
             ly += 18 + 2
 
         # English
-        eng_y = ly
-        canvas.create_text(pad_x, eng_y, text=data['english'],
-                           font=("Segoe UI", self.font_size_en, "bold"),
-                           fill="#1c1c1e", anchor="nw", width=card_w - 16, tags="eng_text")
-
-        # Update border to match content height
-        est_chars = max(1, (card_w - 16) // 7)
-        en_lines = max(1, -(-len(data['english']) // est_chars))
-        card_h = eng_y + en_lines * en_font.metrics("linespace") + 6
+        if self.show_translation:
+            eng_y = ly
+            canvas.create_text(pad_x, eng_y, text=data['english'],
+                               font=("Segoe UI", self.font_size_en, "bold"),
+                               fill="#1c1c1e", anchor="nw", width=card_w - 16, tags="eng_text")
+            est_chars = max(1, (card_w - 16) // 7)
+            en_lines = max(1, -(-len(data.get('english', '')) // est_chars))
+            card_h = eng_y + en_lines * en_font.metrics("linespace") + 6
+        else:
+            card_h = ly
         canvas.coords("card_bg", 1, 0, card_w - 1, card_h)
         canvas.configure(height=card_h)
+        if self._card_window and hasattr(self, '_card_xy'):
+            cx, cy = self._card_xy
+            self._card_window.geometry(f"{card_w}x{card_h}+{cx}+{cy}")
 
         # Map hovered OCR character index → kakasi_items chunk index
         hover_chunk_idx = -1
@@ -1841,6 +1877,7 @@ class ScreenFreezerApp:
                 pass
             self._card_window = None
             self._card_canvas = None
+            self._card_xy = None
         self._card_data = None
         self._card_data_idx = -1
         self._card_box = None
@@ -1873,8 +1910,8 @@ class ScreenFreezerApp:
             mci(f'open "{tmp}" alias tts', buf, len(buf), 0)
             mci('play tts wait', buf, len(buf), 0)
             mci('close tts', buf, len(buf), 0)
-        except Exception as e:
-            print(f"TTS error: {e}")
+        except Exception:
+            pass
         finally:
             try:
                 os.unlink(tmp)
@@ -1995,14 +2032,13 @@ def register_hotkey_win32(app):
     HK_CAPTURE  = 1  # Ctrl+Alt+Shift+E
     HK_SNIP     = 2  # Ctrl+Alt+Shift+R
     HK_SETTINGS = 3  # Ctrl+Alt+Shift+S
-
     reg_ok = user32.RegisterHotKey(None, HK_CAPTURE,  mods, ord('E'))
     reg_ok = user32.RegisterHotKey(None, HK_SNIP,     mods, ord('R')) and reg_ok
     reg_ok = user32.RegisterHotKey(None, HK_SETTINGS, mods, ord('S')) and reg_ok
 
     if not reg_ok:
         err = ctypes.get_last_error()
-        print(f"[DEBUG] RegisterHotKey failed with error {err}. Falling back to GetAsyncKeyState polling.")
+        pass
 
         # ── Fallback: GetAsyncKeyState polling ──────────────────────────────
         def is_key_down(vk):
@@ -2042,7 +2078,7 @@ def register_hotkey_win32(app):
             time.sleep(0.05)
         return
 
-    print("[DEBUG] RegisterHotKey succeeded – waiting for WM_HOTKEY.")
+    pass
     while user32.GetMessageW(ctypes.byref(msg), None, 0, 0):
         if msg.message == WM_HOTKEY:
             if msg.wParam == HK_CAPTURE:
@@ -2060,11 +2096,7 @@ def main():
     # Start Win32 hotkey thread (RegisterHotKey with fallback to GetAsyncKeyState)
     threading.Thread(target=register_hotkey_win32, args=(app,), daemon=True).start()
 
-    print("Application started.")
-    print("  Ctrl+Alt+Shift+E  Capture game window for OCR / translation")
-    print("  Ctrl+Alt+Shift+R  Snip mode (drag-select a region)")
-    print("  Ctrl+Alt+Shift+S  Settings panel")
-    print("  Press Escape while frozen to unfreeze and restore focus.")
+    pass
 
     try:
         app.run()
