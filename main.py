@@ -462,6 +462,13 @@ class ScreenFreezerApp:
         # Start checking the queue for trigger events or translation results
         self.root.after(100, self.check_queue)
 
+    def _apply_round_corners(self, hwnd, w, h, r=4):
+        try:
+            rgn = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, r, r)
+            user32.SetWindowRgn(hwnd, rgn, True)
+        except Exception:
+            pass
+
     def _on_ctrl_key(self, held):
         if self._ctrl_held == held:
             return
@@ -1589,6 +1596,12 @@ class ScreenFreezerApp:
         self._dict_window.geometry(f"{card_w}x{dict_h}+{dict_x}+{dict_y}")
         self._dict_window.lift()
         canvas.configure(height=dict_h, width=card_w)
+        try:
+            self._dict_window.update_idletasks()
+            hwnd = user32.GetAncestor(self._dict_window.winfo_id(), 2)
+            self._apply_round_corners(hwnd, card_w, dict_h)
+        except Exception:
+            pass
         canvas.create_rectangle(1, 1, card_w - 2, dict_h - 2, outline="#e5e5ea", width=1, tags="border_box")
 
     def _dict_lookup_skip(self, seq):
@@ -1850,6 +1863,11 @@ class ScreenFreezerApp:
         if self._card_window and hasattr(self, '_card_xy'):
             cx, cy = self._card_xy
             self._card_window.geometry(f"{card_w}x{card_h}+{cx}+{cy}")
+            try:
+                hwnd = user32.GetAncestor(self._card_window.winfo_id(), 2)
+                self._apply_round_corners(hwnd, card_w, card_h)
+            except Exception:
+                pass
 
         # Map hovered OCR character index → kakasi_items chunk index
         hover_chunk_idx = -1
