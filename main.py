@@ -1455,16 +1455,59 @@ class ScreenFreezerApp:
                 ly += 16
                 for kil in kanji_info_lines:
                     segments = _segment_jp(kil)
-                    # Render each segment with appropriate font, tracking x
-                    sx = pad_x + 6
-                    line_h = 0
+                    # Measure total rendered width
+                    total_w = 0
+                    seg_metrics = []
                     for seg_text, is_jp in segments:
                         sf = (self.japanese_font, 8, "bold") if is_jp else ("Segoe UI", 8)
-                        font_o = tkfont.Font(font=sf)
-                        line_h = max(line_h, font_o.metrics("linespace"))
-                        canvas.create_text(sx, ly, text=seg_text, font=sf, fill="#3a3a3c", anchor="nw")
-                        sx += font_o.measure(seg_text)
-                    ly += line_h + 2
+                        fo = tkfont.Font(font=sf)
+                        sw = fo.measure(seg_text)
+                        seg_metrics.append((seg_text, is_jp, sf, fo, sw))
+                        total_w += sw
+
+                    if total_w <= wrap_w_inner:
+                        # Single line - segment-by-segment rendering
+                        sx = pad_x + 6
+                        line_h = 0
+                        for seg_text, is_jp, sf, fo, sw in seg_metrics:
+                            line_h = max(line_h, fo.metrics("linespace"))
+                            canvas.create_text(sx, ly, text=seg_text, font=sf, fill="#3a3a3c", anchor="nw")
+                            sx += sw
+                        ly += line_h + 2
+                    else:
+                        # Multi-line wrapping with word-wrap
+                        jp_count = sum(len(s) for s, _ in segments if _)
+                        en_count = sum(len(s) for s, _ in segments if not _)
+                        base_font = (self.japanese_font, 8) if jp_count > en_count else ("Segoe UI", 8)
+                        fo = tkfont.Font(font=base_font)
+                        lh = fo.metrics("linespace")
+                        words = kil.split(' ')
+                        line = ''
+                        for w in words:
+                            test = line + (' ' if line else '') + w
+                            if fo.measure(test) <= wrap_w_inner:
+                                line = test
+                            else:
+                                if line:
+                                    canvas.create_text(pad_x + 6, ly, text=line, font=base_font, fill="#3a3a3c", anchor="nw")
+                                    ly += lh + 2
+                                # Handle a word wider than the card
+                                if fo.measure(w) > wrap_w_inner:
+                                    chunk = ''
+                                    for ch in w:
+                                        test_ch = chunk + ch
+                                        if chunk and fo.measure(test_ch) > wrap_w_inner:
+                                            canvas.create_text(pad_x + 6, ly, text=chunk, font=base_font, fill="#3a3a3c", anchor="nw")
+                                            ly += lh + 2
+                                            chunk = ch
+                                        else:
+                                            chunk = test_ch
+                                    line = chunk
+                                else:
+                                    line = w
+                        if line:
+                            canvas.create_text(pad_x + 6, ly, text=line, font=base_font, fill="#3a3a3c", anchor="nw")
+                            ly += lh + 2
 
         canvas.update_idletasks()
         bbox = canvas.bbox("all")
