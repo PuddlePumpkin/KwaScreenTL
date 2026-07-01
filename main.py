@@ -529,7 +529,7 @@ class ScreenFreezerApp:
                     ly = w['y'] - bbox['y'] + BOX_PAD
                     canvas2.create_rectangle(
                         lx, ly, lx + w['width'], ly + w['height'],
-                        fill="#ffe082", stipple="gray25", outline="",
+                        fill="#ffe69c", stipple="gray50", outline="#ffc107", width=1,
                         tags="word_hl")
                     break
                 wcoff += wlen
@@ -545,17 +545,27 @@ class ScreenFreezerApp:
                     break
                 ci_off += orig_len
             if chunk_cs >= 0:
+                min_lx = min_ly = max_rx = max_by = None
                 wcoff = 0
                 for w in words:
                     wlen = len(w['text'])
                     if wcoff < chunk_ce and wcoff + wlen > chunk_cs:
                         lx = w['x'] - bbox['x'] + BOX_PAD
                         ly = w['y'] - bbox['y'] + BOX_PAD
+                        rx = lx + w['width']
+                        by = ly + w['height']
                         canvas2.create_rectangle(
-                            lx, ly, lx + w['width'], ly + w['height'],
-                            fill="#ffe082", stipple="gray25", outline="",
-                            tags="word_hl")
+                            lx, ly, rx, by,
+                            fill="#ffe69c", stipple="gray50", outline="", tags="word_hl")
+                        if min_lx is None or lx < min_lx: min_lx = lx
+                        if min_ly is None or ly < min_ly: min_ly = ly
+                        if max_rx is None or rx > max_rx: max_rx = rx
+                        if max_by is None or by > max_by: max_by = by
                     wcoff += wlen
+                if min_lx is not None:
+                    canvas2.create_rectangle(
+                        min_lx, min_ly, max_rx, max_by,
+                        fill="", outline="#ffc107", width=1, tags="word_hl")
 
     def check_queue(self):
         try:
@@ -902,7 +912,9 @@ class ScreenFreezerApp:
                 }
                 chars = list(text)
                 words = []
-                weights = [0.3 if ch in '。、！）」』】〙〛〕\u3001\u3002\uff01\uff09' else (0.5 if ord(ch) < 128 else 1.0) for ch in chars]
+                weights = [1.0 for ch in chars]
+                if weights and chars[-1] in '。、！）」』】〙〛〕\u3001\u3002\uff01\uff09':
+                    weights[-1] = 0.3
                 total_w = sum(weights)
                 accum = 0.0
                 for ci, ch in enumerate(chars):
