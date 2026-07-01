@@ -55,6 +55,9 @@ CROP_RIGHT = 10
 BOX_PAD = 2
 BORDER_WIDTH = 5
 
+# ── Card background color ────────────────────────────────────────────────────
+CARD_BG = "#f2f2f7"
+
 
 
 import tkinter as tk
@@ -1343,7 +1346,7 @@ class ScreenFreezerApp:
             self._dict_window = tk.Toplevel(self.root)
             self._dict_window.overrideredirect(True)
             self._dict_window.attributes("-topmost", True)
-            self._dict_canvas = tk.Canvas(self._dict_window, borderwidth=0, highlightthickness=0, bg="#ffffff")
+            self._dict_canvas = tk.Canvas(self._dict_window, borderwidth=0, highlightthickness=0, bg=CARD_BG)
             self._dict_canvas.pack(fill="both", expand=True)
             self._dict_window.bind("<Escape>", lambda e: self.unfreeze_screen())
             try:
@@ -1391,8 +1394,6 @@ class ScreenFreezerApp:
         ly = 6
         wrap_w = max(card_w - 16, 180)
         wrap_w_inner = max(card_w - 22, 170)
-
-        canvas.create_rectangle(1, 0, card_w - 2, 0, outline="#e5e5ea", width=1, tags="border")
 
         if not single_char:
             for entry in res.entries[:2]:
@@ -1555,7 +1556,6 @@ class ScreenFreezerApp:
             self._apply_round_corners(hwnd, card_w, dict_h)
         except Exception:
             pass
-        canvas.create_rectangle(1, 1, card_w - 2, dict_h - 2, outline="#e5e5ea", width=1, tags="border_box")
 
     def _dict_lookup_skip(self, seq):
         """Main thread: skip dict card (no useful results)."""
@@ -1693,7 +1693,7 @@ class ScreenFreezerApp:
         win.geometry(f"{card_w}x{card_h}+{screen_x}+{card_top}")
         win.attributes("-topmost", True)
         canvas = tk.Canvas(win, width=card_w, height=card_h,
-                           borderwidth=0, highlightthickness=0, bg="#ffffff")
+                           borderwidth=0, highlightthickness=0, bg=CARD_BG)
         canvas.pack()
         win.bind("<Escape>", lambda e: self.unfreeze_screen())
 
@@ -1722,10 +1722,6 @@ class ScreenFreezerApp:
 
         pad_x = 6
         ly = 0
-
-        # Background border (height updated after all content)
-        canvas.create_rectangle(1, 1, card_w - 2, 1,
-                                outline="#e5e5ea", width=1, tags="card_bg")
 
         # Crop image
         if self.show_crop and box.get('crop_pil'):
@@ -1811,7 +1807,6 @@ class ScreenFreezerApp:
             card_h = eng_y + en_lines * en_font.metrics("linespace") + 6
         else:
             card_h = ly
-        canvas.coords("card_bg", 1, 0, card_w - 1, card_h)
         canvas.configure(height=card_h)
         if self._card_window and hasattr(self, '_card_xy'):
             cx, cy = self._card_xy
