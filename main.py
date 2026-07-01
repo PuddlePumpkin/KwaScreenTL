@@ -525,8 +525,8 @@ class ScreenFreezerApp:
             for w in words:
                 wlen = len(w['text'])
                 if wcoff <= char_off < wcoff + wlen:
-                    lx = w['x'] - bbox['x']
-                    ly = w['y'] - bbox['y']
+                    lx = w['x'] - bbox['x'] + BOX_PAD
+                    ly = w['y'] - bbox['y'] + BOX_PAD
                     canvas2.create_rectangle(
                         lx, ly, lx + w['width'], ly + w['height'],
                         fill="#ffe082", stipple="gray25", outline="",
@@ -549,8 +549,8 @@ class ScreenFreezerApp:
                 for w in words:
                     wlen = len(w['text'])
                     if wcoff < chunk_ce and wcoff + wlen > chunk_cs:
-                        lx = w['x'] - bbox['x']
-                        ly = w['y'] - bbox['y']
+                        lx = w['x'] - bbox['x'] + BOX_PAD
+                        ly = w['y'] - bbox['y'] + BOX_PAD
                         canvas2.create_rectangle(
                             lx, ly, lx + w['width'], ly + w['height'],
                             fill="#ffe082", stipple="gray25", outline="",
@@ -878,7 +878,7 @@ class ScreenFreezerApp:
         ).start()
 
     def run_ocr_paddle(self, win_crop):
-        """Run PaddleOCR on the crop, return lines in same format as run_ocr_at_scale."""
+        """Run PaddleOCR on the crop, return lines with per-char bounding boxes."""
         ocr = get_paddle_ocr()
         import numpy as np
         img_array = np.array(win_crop.convert("RGB"))
@@ -894,23 +894,29 @@ class ScreenFreezerApp:
                     continue
                 xs = [int(p[0]) for p in poly]
                 ys = [int(p[1]) for p in poly]
-                bbox = {
+                line_bbox = {
                     'x': min(xs),
                     'y': min(ys),
                     'width': max(xs) - min(xs),
                     'height': max(ys) - min(ys)
                 }
                 chars = list(text)
-                cw = bbox['width'] / max(len(chars), 1)
                 words = []
+                weights = [0.3 if ch in '。、！）」』】〙〛〕\u3001\u3002\uff01\uff09' else (0.5 if ord(ch) < 128 else 1.0) for ch in chars]
+                total_w = sum(weights)
+                accum = 0.0
                 for ci, ch in enumerate(chars):
+                    cw = weights[ci] / total_w * line_bbox['width']
+                    x0 = line_bbox['x'] + int(accum)
+                    accum += cw
+                    x1 = line_bbox['x'] + int(accum)
                     words.append({
                         'text': ch,
                         'bounding_rect': {
-                            'x': bbox['x'] + int(ci * cw),
-                            'y': bbox['y'],
-                            'width': int(cw),
-                            'height': bbox['height'],
+                            'x': x0,
+                            'y': line_bbox['y'],
+                            'width': x1 - x0,
+                            'height': line_bbox['height'],
                         }
                     })
                 lines.append({
@@ -1192,8 +1198,8 @@ class ScreenFreezerApp:
         for wi2 in range(start, end + 1):
             if wi2 < len(words):
                 w = words[wi2]
-                lx = w['x'] - bbox['x']
-                ly = w['y'] - bbox['y']
+                lx = w['x'] - bbox['x'] + BOX_PAD
+                ly = w['y'] - bbox['y'] + BOX_PAD
                 canvas.create_rectangle(lx, ly, lx + w['width'], ly + w['height'],
                                     fill="#007aff", stipple="gray50", outline="",
                                     tags="sel_hl")
