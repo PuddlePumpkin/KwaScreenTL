@@ -5,3 +5,4 @@ furigana_overrides.json
 testreadings.py
 debug_nanori.py
 test_readings.py
+paddle.log

@@ -11,16 +11,20 @@ import time
 # paddle/paddlex import, so it goes right at the top.
 os.environ["FLAGS_enable_pir_with_executor_in_serial_mode"] = "0"
 
-# ── Suppress noisy PaddleOCR/Paddle startup messages ──────────────────────────
+# ── Redirect all library stderr to a log file ─────────────────────────────────
 import warnings
 warnings.filterwarnings("ignore", message="No ccache found")
-os.environ.setdefault("GLOG_minloglevel", "3")         # suppress C++ glog entirely
-os.environ.setdefault("PADDLE_PDX_DEBUG", "0")         # suppress paddlex DEBUG
-os.environ.setdefault("PADDLEOCR_DISABLE_AUTO_LOGGING_CONFIG", "1")
-import logging
-logging.getLogger("ppocr").setLevel(logging.WARNING)
-logging.getLogger("paddlex").setLevel(logging.WARNING)
-logging.getLogger().setLevel(logging.WARNING)
+import sys
+import msvcrt
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+STD_ERROR_HANDLE = -12
+_log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "paddle.log")
+_log_fd = os.open(_log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+_log_handle = msvcrt.get_osfhandle(_log_fd)
+kernel32.SetStdHandle(STD_ERROR_HANDLE, _log_handle)
+os.dup2(_log_fd, 2)
+os.close(_log_fd)
+sys.stderr = open(_log_path, "a", encoding="utf-8")
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── OCR engine selector ──────────────────────────────────────────────────────
@@ -460,9 +464,17 @@ class ScreenFreezerApp:
         self._settings_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
         self._settings_window = None
         self._load_settings()
-        
+
+        # Pre-warm PaddleOCR in background so first scan doesn't pay model-load cost
+        self._prewarm_event = threading.Event()
+        threading.Thread(target=self._prewarm_paddle, daemon=True).start()
+
         # Start checking the queue for trigger events or translation results
         self.root.after(100, self.check_queue)
+
+    def _prewarm_paddle(self):
+        get_paddle_ocr()
+        self._prewarm_event.set()
 
     def _apply_round_corners(self, hwnd, w, h, r=4):
         try:
@@ -2144,13 +2156,16 @@ def register_hotkey_win32(app):
         user32.DispatchMessageW(ctypes.byref(msg))
 
 def main():
-    print("Application started.")
+    print("Application started")
+    print("Loading OCR Model...\n")
+
+    app = ScreenFreezerApp()
+    app._prewarm_event.wait()
+    print("Application Ready\n")
     print("  Ctrl+Alt+Shift+E  Capture game window for OCR / translation")
     print("  Ctrl+Alt+Shift+R  Snip mode (drag-select a region)")
     print("  Ctrl+Alt+Shift+S  Settings panel")
     print("  Press Escape while frozen to unfreeze and restore focus.")
-
-    app = ScreenFreezerApp()
 
     # Start Win32 hotkey thread (RegisterHotKey with fallback to GetAsyncKeyState)
     threading.Thread(target=register_hotkey_win32, args=(app,), daemon=True).start()
