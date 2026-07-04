@@ -116,8 +116,9 @@ def get_paddle_ocr():
             use_doc_unwarping=False,
             use_textline_orientation=False,
             return_word_box=False,
-            det_db_thresh=0.4,
-            det_db_box_thresh=0.6,
+            text_det_thresh=0.4,
+            text_det_box_thresh=0.6,
+            text_recognition_batch_size=16,
         )
     return _paddle_ocr
 
