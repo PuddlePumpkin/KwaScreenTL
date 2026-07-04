@@ -1387,9 +1387,10 @@ class ScreenFreezerApp:
         self._show_card(idx)
 
     def _box_leave(self, idx):
-        """Mouse left a box window → reset highlights."""
+        """Mouse left a box window → reset highlights and hide card."""
         if self.is_dragging:
             return
+        self._hide_card()
         for _, canvas, _ in self._box_windows:
             try:
                 canvas.itemconfig("box_border", outline="#007aff", width=BORDER_WIDTH)
