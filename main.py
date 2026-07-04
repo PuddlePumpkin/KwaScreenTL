@@ -1092,7 +1092,9 @@ class ScreenFreezerApp:
         win_crop = pil_img.crop((win_x, win_y, win_x + win_local['w'], win_y + win_local['h']))
         
         try:
+            ocr_start = time.time()
             lines = self.run_ocr_paddle(win_crop)
+            ocr_time = (time.time() - ocr_start) * 1000
             
             translation_targets = []
             for line in lines:
@@ -1121,45 +1123,70 @@ class ScreenFreezerApp:
                     continue
                 translation_targets.append((text, bbox, crop_pil, words_data))
 
-            # Fetch translations in parallel
-            boxes = []
+            # Phase 1: local processing (parallel)
+            proc_start = time.time()
+            proc_results = []
             with ThreadPoolExecutor(max_workers=8) as executor:
-                do_translate = self.show_translation
                 futures = {
-                    executor.submit(translate_and_convert, text, do_translate): (bbox, crop_pil, words_data)
+                    executor.submit(translate_and_convert, text, False): (text, bbox, crop_pil, words_data)
                     for text, bbox, crop_pil, words_data in translation_targets
                 }
                 for future in futures:
-                    bbox, crop_pil, words_data = futures[future]
+                    text, bbox, crop_pil, words_data = futures[future]
                     try:
                         res = future.result()
-                        # For windows engine, crop from full monitor image
-                        if crop_pil is None:
-                            crop_pil = pil_img.crop((
-                                max(0, int(bbox['x'] + win_x)),
-                                max(0, int(bbox['y'] + win_y)),
-                                min(pil_img.width,  int(bbox['x'] + bbox['width'] + win_x)),
-                                min(pil_img.height, int(bbox['y'] + bbox['height'] + win_y))
-                            ))
-                        
-                        # Estimate width based on longest line of text or crop width
-                        max_chars = max(len(res['original']), len(res['romaji']), len(res['kana']), len(res['english']))
-                        text_w = max_chars * 7 + 24
-                        w = min(max(text_w, bbox['width'] + 24, 180), 400)
-                        
-                        # Estimate height including cropped image height
-                        h = bbox['height'] + 130 + (len(res['english']) // 40) * 16
-                        
-                        boxes.append({
-                            'w': w,
-                            'h': h,
-                            'data': res,
-                            'orig_bbox': bbox,
-                            'crop_pil': crop_pil,
-                            'words': words_data
+                        proc_results.append({
+                            'res': res, 'text': text, 'bbox': bbox,
+                            'crop_pil': crop_pil, 'words_data': words_data,
                         })
                     except Exception:
                         pass
+            self._last_proc_ms = (time.time() - proc_start) * 1000
+
+            # Phase 2: translation API (parallel, only if enabled)
+            if self.show_translation:
+                trans_start = time.time()
+                with ThreadPoolExecutor(max_workers=8) as executor:
+                    futures = {
+                        executor.submit(translate_deepl, pr['text']): pr
+                        for pr in proc_results
+                    }
+                    for future in futures:
+                        try:
+                            futures[future]['res']['english'] = future.result()
+                        except Exception:
+                            futures[future]['res']['english'] = ''
+                self._last_translation_ms = (time.time() - trans_start) * 1000
+            else:
+                self._last_translation_ms = 0
+
+            # Phase 3: build boxes
+            boxes = []
+            for pr in proc_results:
+                res = pr['res']
+                bbox = pr['bbox']
+                crop_pil = pr['crop_pil']
+                words_data = pr['words_data']
+                try:
+                    if crop_pil is None:
+                        crop_pil = pil_img.crop((
+                            max(0, int(bbox['x'] + win_x)),
+                            max(0, int(bbox['y'] + win_y)),
+                            min(pil_img.width,  int(bbox['x'] + bbox['width'] + win_x)),
+                            min(pil_img.height, int(bbox['y'] + bbox['height'] + win_y))
+                        ))
+                    max_chars = max(len(res['original']), len(res['romaji']), len(res['kana']), len(res['english']))
+                    text_w = max_chars * 7 + 24
+                    w = min(max(text_w, bbox['width'] + 24, 180), 400)
+                    h = bbox['height'] + 130 + (len(res['english']) // 40) * 16
+                    boxes.append({
+                        'w': w, 'h': h, 'data': res,
+                        'orig_bbox': bbox, 'crop_pil': crop_pil, 'words': words_data,
+                    })
+                except Exception:
+                    pass
+
+            self._last_ocr_ms = ocr_time
 
             # Post result back to main GUI thread
             self.msg_queue.put(("ocr_complete", boxes))
@@ -1249,8 +1276,15 @@ class ScreenFreezerApp:
 
             self._box_windows.append((win, canvas, idx))
 
-        elapsed = (time.time() - self._ocr_start_time) * 1000
-        print(f"OCR: {len(boxes)} regions, {elapsed:.0f}ms")
+        total = (time.time() - self._ocr_start_time) * 1000
+        ocr_ms = getattr(self, '_last_ocr_ms', 0)
+        proc_ms = getattr(self, '_last_proc_ms', 0)
+        trans_ms = getattr(self, '_last_translation_ms', 0)
+        print(f"OCR: {len(boxes)} regions, {ocr_ms:.0f}ms")
+        print(f"Processing: {proc_ms:.0f}ms")
+        if trans_ms:
+            print(f"Translation: {trans_ms:.0f}ms")
+        print(f"Total: {total:.0f}ms\n")
 
     def _destroy_box_windows(self):
         """Destroy all box windows and hide card."""
