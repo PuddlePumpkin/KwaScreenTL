@@ -796,7 +796,13 @@ class ScreenFreezerApp:
                     trans_ms = getattr(self, '_last_translation_ms', 0)
                     cw, ch = getattr(self, '_last_crop_size', (0, 0))
                     dims = f"({cw}x{ch})" if cw else ""
-                    print(f"OCR: {data} regions, {ocr_ms:.0f}ms {dims}")
+                    vc = getattr(self, '_last_ocr_vcount', 0)
+                    hc = getattr(self, '_last_ocr_hcount', 0)
+                    mode = ""
+                    if vc and hc: mode = f" [V{hc} H{vc}]"
+                    elif vc: mode = f" [V{vc}]"
+                    elif hc: mode = f" [H{hc}]"
+                    print(f"OCR: {data} regions, {ocr_ms:.0f}ms {dims}{mode}")
                     print(f"Processing: {proc_ms:.0f}ms")
                     if trans_ms:
                         print(f"Translation: {trans_ms:.0f}ms")
@@ -1171,6 +1177,7 @@ class ScreenFreezerApp:
         ds = getattr(self, 'region_detect_scale', 100)
         use_pre = ds > 0
         oh, ow = img_array.shape[:2]
+        lines = []
 
         if use_pre:
             # Pre-detect at reduced scale → full-res recognition
@@ -1180,7 +1187,7 @@ class ScreenFreezerApp:
             det_img = np.array(Image.fromarray(img_array).resize((dw, dh), Image.LANCZOS))
             det_gen = inner.text_det_model(det_img)
             det_items = list(det_gen)
-            lines = []
+            v_count = h_count = 0
             if det_items:
                 r = det_items[0]
                 dt_polys = np.asarray(r.get('dt_polys', []), dtype=np.float64)
@@ -1195,14 +1202,29 @@ class ScreenFreezerApp:
                         if x2 - x1 < 8 or y2 - y1 < 8:
                             continue
                         crop = img_array[y1:y2, x1:x2]
-                        rec_gen = inner.text_rec_model(crop)
-                        rec_items = list(rec_gen)
-                        text = ''
-                        if rec_items and hasattr(rec_items[0], 'get'):
-                            text = rec_items[0].get('rec_text', '')
-                        text = re.sub(r'\s+', '', text).strip()
-                        if not text:
+                        vertical = (y2 - y1) > (x2 - x1)
+                        if vertical: v_count += 1
+                        else: h_count += 1
+                        texts = []
+                        if vertical:
+                            crop_res = list(ocr.predict(crop))
+                            if crop_res:
+                                r = crop_res[0]
+                                for t in r.get('rec_texts', []):
+                                    t = re.sub(r'\s+', '', t).strip()
+                                    if t:
+                                        texts.append(t)
+                        else:
+                            rec_gen = inner.text_rec_model(crop)
+                            rec_items = list(rec_gen)
+                            if rec_items and hasattr(rec_items[0], 'get'):
+                                t = rec_items[0].get('rec_text', '')
+                                t = re.sub(r'\s+', '', t).strip()
+                                if t:
+                                    texts.append(t)
+                        if not texts:
                             continue
+                        text = ''.join(texts)
                         line_bbox = {'x': x1, 'y': y1, 'width': x2 - x1, 'height': y2 - y1}
                         chars = list(text)
                         wt = [1.0 for _ in chars]
@@ -1212,12 +1234,21 @@ class ScreenFreezerApp:
                         accum = 0.0
                         words = []
                         for ch, cw in zip(chars, wt):
-                            cw = cw / total_w * line_bbox['width']
-                            x0 = line_bbox['x'] + int(accum)
-                            accum += cw
-                            x1w = line_bbox['x'] + int(accum)
-                            words.append({'text': ch, 'bounding_rect': {'x': x0, 'y': line_bbox['y'], 'width': x1w - x0, 'height': line_bbox['height']}})
+                            if vertical:
+                                cw = cw / total_w * line_bbox['height']
+                                y0 = line_bbox['y'] + int(accum)
+                                accum += cw
+                                y1w = line_bbox['y'] + int(accum)
+                                words.append({'text': ch, 'bounding_rect': {'x': line_bbox['x'], 'y': y0, 'width': line_bbox['width'], 'height': y1w - y0}})
+                            else:
+                                cw = cw / total_w * line_bbox['width']
+                                x0 = line_bbox['x'] + int(accum)
+                                accum += cw
+                                x1w = line_bbox['x'] + int(accum)
+                                words.append({'text': ch, 'bounding_rect': {'x': x0, 'y': line_bbox['y'], 'width': x1w - x0, 'height': line_bbox['height']}})
                         lines.append({'text': text, 'words': words})
+        self._last_ocr_vcount = v_count
+        self._last_ocr_hcount = h_count
         return lines
 
     def process_ocr(self, pil_img, win_local, ocr_gen, detect_scale=None):
