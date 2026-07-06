@@ -18,10 +18,10 @@ Screen translation tool for Japanese applications. Captures the active monitor, 
 | `Ctrl+Alt+Shift+R` | Snip mode (drag-select a region) |
 | `Ctrl+Alt+Shift+S` | Toggle settings panel |
 
-| Mouse (on OCR box) | Action |
+| Mouse | Action |
 |---|---|
 | `Hover` | Show translation card |
-|` Click` | Show dictionary |
+| `Click` | Show dictionary |
 | `Right-click` | Show kanji info |
 | `Ctrl+Click` | Show kanji info (with hover highlight) |
 | `Middle-click` | Text-to-speech |
