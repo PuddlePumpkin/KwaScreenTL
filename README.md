@@ -9,7 +9,6 @@ Screen translation tool for Japanese applications. Captures the active monitor, 
 1. Python 3.10+ recommended.
 2. Run `setup.bat` to create a virtual environment and install dependencies.
 3. Run `run.bat` to start the app.
-   The global `keyboard` module may require administrator rights on some systems.
 
 ## Usage
 
@@ -37,20 +36,21 @@ Screen translation tool for Japanese applications. Captures the active monitor, 
 - **JMdict** (via Jamdict) for word/kanji definitions — local offline dictionary
 - **Snip mode** for manual region capture
 - **Skip non-Japanese** mode to filter out non-JP OCR results
-- **Timeout & retry** for translation/API calls
 - **Text-to-speech** via edge-tts (ja-JP-NanamiNeural)
 - All library output (paddle, onnxruntime) redirected to `app.log`
 
 ## Settings
 
-- **Show romaji / Show translation**: toggles in the settings panel (`Ctrl+Alt+Shift+S`)
-- **Translator**: change `TRANSLATOR` constant at the top of `main.py` (`"deepl"` or `"google"`)
-- **DeepL API key**: place your key in `deeplapikey.txt` next to `main.py`
+Toggles in the settings panel (`Ctrl+Alt+Shift+S`), persisted to `settings.json`:
+- **Show romaji / Show translation** — hover card display
+- **Skip non-Japanese text** — filter non-JP OCR results
+- **Show cropped image** — debug: show the OCR crop in the hover card
+- **OCR Prepass Scale** — % scale for faster region detection (25/50/75/100)
 
 ## Used Libraries
 
 - [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) — Japanese OCR
-- [Deep-Translator](https://github.com/nidhaloff/deep-translator) — DeepL/Google translation
+- [Deep-Translator](https://github.com/nidhaloff/deep-translator) — Google translation
 - [pykakasi](https://github.com/miurahr/pykakasi) — Japanese → romaji/kana
 - [jamdict](https://github.com/neocl/jamdict) — JMdict dictionary lookup
 - [SudachiPy](https://github.com/WorksApplications/SudachiPy) — Morphological analysis
@@ -59,3 +59,4 @@ Screen translation tool for Japanese applications. Captures the active monitor, 
 - [Pillow](https://python-pillow.org/) — Image processing
 - [edge-tts](https://github.com/rany2/edge-tts) — Text-to-speech
 - [PaddlePaddle](https://github.com/PaddlePaddle/Paddle) / [ONNX Runtime](https://github.com/microsoft/onnxruntime) — OCR backend
+- [requests](https://github.com/psf/requests) — DeepL API calls (direct)
