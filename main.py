@@ -1053,7 +1053,7 @@ class ScreenFreezerApp:
                     dm = ci.misses - prev_misses
                     self._prev_cache_hits = ci.hits
                     self._prev_cache_misses = ci.misses
-                    print(f"Processing cache: {dh} hits, {dm} misses, {ci.currsize} entries")
+                    print(f"Process cache: {dh} hits, {dm} misses, {ci.currsize} entries")
                     dh2 = _trans_hits - getattr(self, '_prev_trans_hits', 0)
                     dm2 = _trans_misses - getattr(self, '_prev_trans_misses', 0)
                     self._prev_trans_hits = _trans_hits
@@ -1061,6 +1061,9 @@ class ScreenFreezerApp:
                     print(f"Translation cache: {dh2} hits, {dm2} misses, {len(_translation_cache)} entries")
                     print(f"Total: {total:.0f}ms\n")
                     # Re-render card if currently showing (data was updated in-place)
+                    if self._card_window and self._card_data_idx >= 0:
+                        self._render_card()
+                elif msg_type == "cached_translations_ready":
                     if self._card_window and self._card_data_idx >= 0:
                         self._render_card()
                 elif msg_type == "toggle_settings":
@@ -1652,18 +1655,23 @@ class ScreenFreezerApp:
                 trans_start = time.time()
                 texts = [t[0] for t in translation_targets]
                 global _trans_hits, _trans_misses
-                translations = [None] * len(texts)
                 uncached_texts = []
                 uncached_indices = []
                 for i, t in enumerate(texts):
                     if t in _translation_cache:
                         _trans_hits += 1
                         _translation_cache[t]["hits"] += 1
-                        translations[i] = _translation_cache[t]["translation"]
+                        eng = _translation_cache[t]["translation"]
+                        boxes[i]['data']['english'] = eng
+                        h_extra = (len(eng) // 40) * 16
+                        boxes[i]['h'] = boxes[i]['orig_bbox']['height'] + 130 + h_extra
                     else:
                         _trans_misses += 1
                         uncached_texts.append(t)
                         uncached_indices.append(i)
+                # Push cached translations immediately (card re-render only, no stats)
+                if self._ocr_gen == ocr_gen:
+                    self.msg_queue.put(("cached_translations_ready", None))
                 if uncached_texts:
                     if self.translator == "deepl":
                         batch_results = translate_deepl_batch(uncached_texts)
@@ -1675,17 +1683,15 @@ class ScreenFreezerApp:
                     _cache_trim()
                     _save_cache(self.translator)
                     for idx, res in zip(uncached_indices, batch_results):
-                        translations[idx] = res
-                for i, trans in enumerate(translations):
-                    if i < len(boxes) and trans is not None:
-                        boxes[i]['data']['english'] = trans
-                        h_extra = (len(trans) // 40) * 16
-                        boxes[i]['h'] = boxes[i]['orig_bbox']['height'] + 130 + h_extra
+                        if idx < len(boxes) and res is not None:
+                            boxes[idx]['data']['english'] = res
+                            h_extra = (len(res) // 40) * 16
+                            boxes[idx]['h'] = boxes[idx]['orig_bbox']['height'] + 130 + h_extra
                 self._last_translation_ms = (time.time() - trans_start) * 1000
             else:
                 self._last_translation_ms = 0
 
-            # Notify main thread that data is fully ready
+            # Notify main thread that data is fully ready (final push)
             if self._ocr_gen != ocr_gen:
                 return
             self.msg_queue.put(("ocr_data_ready", len(boxes)))
