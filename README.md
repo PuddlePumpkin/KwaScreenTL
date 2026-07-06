@@ -1,6 +1,6 @@
 # KwaScreenTL
 
-![Screenshot](/Docs/CaptureExample.png)
+![Screenshot](/Docs/CaptureExampleScaled.png)
 
 ⚠️ Warning: AI vibe coded slop ⚠️
 
