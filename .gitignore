@@ -214,3 +214,4 @@ git_stats/*
 StyleCop.Cache
 bin
 obj
+Launcher.lnk

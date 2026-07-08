@@ -12,9 +12,9 @@ namespace KwaScreenTL_Launcher
         static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, nuint dwExtraInfo);
 
         private const uint KEYEVENTF_KEYUP = 0x0002;
-        private const byte VK_LCONTROL = 0xA2;
-        private const byte VK_LMENU = 0xA4;
-        private const byte VK_LSHIFT = 0xA0;
+        private const byte VK_LCONTROL = 0x11;
+        private const byte VK_LMENU = 0x12;
+        private const byte VK_LSHIFT = 0x10;
         private const byte VK_S = 0x53;
 
         private TrayManager? _tray;
@@ -81,9 +81,7 @@ namespace KwaScreenTL_Launcher
             {
                 if (File.Exists(flagPath))
                 {
-                    var elapsed = DateTime.UtcNow - minStart;
-                    if (elapsed >= TimeSpan.FromSeconds(3))
-                        break;
+                    break;
                 }
                 else if (DateTime.UtcNow - minStart > timeout)
                 {
@@ -96,7 +94,6 @@ namespace KwaScreenTL_Launcher
 
             StatusText.Text = "KwaScreenTL is running in the system tray";
             SetupProgress.Visibility = Visibility.Collapsed;
-            await Task.Delay(1500);
             MinimizeToTray();
         }
 
@@ -197,25 +194,27 @@ namespace KwaScreenTL_Launcher
             if (_pythonProcess is null || _pythonProcess.HasExited)
             {
                 StartApp();
-                return;
+                // Wait a moment for the app to start before sending the command
+                Thread.Sleep(1000);
             }
 
-            keybd_event(VK_LCONTROL, 0, 0, 0);
-            keybd_event(VK_LMENU, 0, 0, 0);
-            keybd_event(VK_LSHIFT, 0, 0, 0);
-            keybd_event(VK_S, 0, 0, 0);
-            Thread.Sleep(30);
-            keybd_event(VK_S, 0, KEYEVENTF_KEYUP, 0);
-            keybd_event(VK_LSHIFT, 0, KEYEVENTF_KEYUP, 0);
-            keybd_event(VK_LMENU, 0, KEYEVENTF_KEYUP, 0);
-            keybd_event(VK_LCONTROL, 0, KEYEVENTF_KEYUP, 0);
+            try
+            {
+                using var client = new System.Net.Sockets.TcpClient("127.0.0.1", 54321);
+                using var stream = client.GetStream();
+                byte[] data = System.Text.Encoding.UTF8.GetBytes("toggle_settings");
+                stream.Write(data, 0, data.Length);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Failed to send settings command: {ex.Message}");
+            }
         }
 
         private void OnTrayExit(object? sender, EventArgs e)
         {
-            _tray?.Dispose();
             KillPython();
-            System.Windows.Application.Current.Shutdown();
+            _tray?.Dispose();
             Environment.Exit(0);
         }
 

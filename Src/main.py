@@ -1,12 +1,19 @@
+import os
+import json
+import time
+import tkinter as tk
+import tkinter.messagebox as tkmb
+import queue
+import threading
+import socket
+import re
 import ctypes
 import ctypes.wintypes
-import json
+import sys
 import logging
-import os
-import queue
-import re
-import threading
-import time
+from concurrent.futures import ThreadPoolExecutor
+from PIL import Image, ImageTk
+import tkinter.font as tkfont
 
 # PaddlePaddle 3.3 PIR compatibility workaround — must be set before any
 # paddle/paddlex import, so it goes right at the top.
@@ -964,6 +971,30 @@ class KwaScreenApp:
         # Start checking the queue for trigger events or translation results
         self.root.after(100, self.check_queue)
 
+        # Start background command listener for the Launcher
+        threading.Thread(target=self._start_command_listener, daemon=True).start()
+
+
+    def _start_command_listener(self):
+        """Listen for remote commands from the Launcher via a local TCP socket."""
+        port = 54321
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind(('127.0.0.1', port))
+                s.listen(5)
+                while True:
+                    conn, addr = s.accept()
+                    with conn:
+                        try:
+                            data = conn.recv(1024).decode('utf-8').strip()
+                            if data == "toggle_settings":
+                                self.msg_queue.put(("toggle_settings", None))
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
     def _prewarm_paddle(self):
         get_paddle_ocr()
         self._prewarm_event.set()
@@ -1070,7 +1101,10 @@ class KwaScreenApp:
                             import traceback
                             traceback.print_exc(file=sys.stdout)
                 elif msg_type == "trigger_snip":
-                    self.enter_snip_mode()
+                    if self.snip_window:
+                        self._close_snip()
+                    else:
+                        self.enter_snip_mode()
                 elif msg_type == "ocr_complete":
                     self.display_translations(data)
                 elif msg_type == "ocr_boxes_ready":
