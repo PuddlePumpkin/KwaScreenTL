@@ -956,6 +956,7 @@ class KwaScreenApp:
         self.japanese_font = "Meiryo"
         self.japanese_font_size = 16
         self.font_size_en = 10
+        self.snip_window = None
         self.hk_capture = {"mod": MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, "vk": ord('E'), "display": "Ctrl+Alt+Shift+E"}
         self.hk_snip = {"mod": MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, "vk": ord('R'), "display": "Ctrl+Alt+Shift+R"}
         self.hk_settings = {"mod": MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, "vk": ord('S'), "display": "Ctrl+Alt+Shift+S"}
