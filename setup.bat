@@ -26,6 +26,6 @@ echo ============================================
 echo Setup complete!
 echo.
 echo To run the app, use:
-echo   %PYTHON% main.py
+echo   %PYTHON% Src\main.py
 echo ============================================
 pause

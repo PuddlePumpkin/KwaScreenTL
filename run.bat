@@ -1,3 +1,3 @@
 @echo off
-".venv\Scripts\python" "%~dp0main.py"
+".venv\Scripts\python" "%~dp0Src\main.py"
 pause

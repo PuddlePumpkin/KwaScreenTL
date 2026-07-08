@@ -13,4 +13,4 @@ _paddle_game.txt
 paddle.log
 Todo.txt
 /tests
-/__pycache__
+__pycache__/

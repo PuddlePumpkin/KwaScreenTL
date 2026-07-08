@@ -12,6 +12,8 @@ from hotkeys import (
 )
 
 
+_PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 class SettingsManager:
     def __init__(self, app):
         self.app = app
@@ -22,7 +24,7 @@ class SettingsManager:
         self.recording_prev = None
         self.hk_suppress_until = 0.0
         self.hk_btns = {}
-        self._file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+        self._file = os.path.join(_PROJECT_DIR, "settings.json")
 
     # ── Persistence ──────────────────────────────────────────────────────
 

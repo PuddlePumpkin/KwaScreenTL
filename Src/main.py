@@ -19,9 +19,10 @@ import sys
 import msvcrt
 from hotkeys import register_hotkey_win32, _hk_display, _vk_to_display, MOD_CONTROL, MOD_ALT, MOD_SHIFT, MOD_NOREPEAT
 from settings import SettingsManager
+_PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 STD_ERROR_HANDLE = -12
-_log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.log")
+_log_path = os.path.join(_PROJECT_DIR, "app.log")
 
 class _Tee:
     def __init__(self, *files):
@@ -161,7 +162,7 @@ import webbrowser
 import urllib.parse
 
 # ── API keys (JSON) ─────────────────────────────────────────────────────────
-_API_KEYS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "apikeys.json")
+_API_KEYS_FILE = os.path.join(_PROJECT_DIR, "apikeys.json")
 
 def _load_api_keys():
     try:
@@ -237,7 +238,7 @@ _trans_misses = 0
 _TRANSLATION_CACHE_MAX = 1000
 
 def _cache_path(service):
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), f"translation_cache_{service}.json")
+    return os.path.join(_PROJECT_DIR, f"translation_cache_{service}.json")
 
 def _load_cache(service):
     global _translation_cache
