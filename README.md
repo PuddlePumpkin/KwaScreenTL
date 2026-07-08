@@ -2,8 +2,6 @@
 
 ![Screenshot](/Docs/CaptureExampleScaled.png)
 
-⚠️ Warning: AI vibe coded slop ⚠️
-
 Screen translation tool for Japanese applications. Runs OCR via PaddleOCR, translates using DeepL / Google translate, and displays popup cards with dictionary data (JMdict/Jamdict).
 
 ## Setup
