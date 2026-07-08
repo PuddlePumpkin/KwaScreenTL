@@ -2370,13 +2370,13 @@ class KwaScreenApp:
         bbox = canvas.bbox("all")
         dict_h = (bbox[3] if bbox else ly) + 8
 
-        screen_limit_x = 1920
-        screen_limit_y = 1080
         try:
-            screen_limit_x = self.root.winfo_screenwidth()
-            screen_limit_y = self.root.winfo_screenheight()
+            v_left = user32.GetSystemMetrics(76)
+            v_top = user32.GetSystemMetrics(77)
+            v_right = v_left + user32.GetSystemMetrics(78)
+            v_bottom = v_top + user32.GetSystemMetrics(79)
         except Exception:
-            pass
+            v_left, v_top, v_right, v_bottom = 0, 0, 1920, 1080
 
         def _dict_rect_overlaps(cx, cy, cw, ch):
             cr = (cx, cy, cx + cw, cy + ch)
@@ -2432,12 +2432,12 @@ class KwaScreenApp:
             (bump_right + 4, self.overlay_y),
             (self.overlay_x - card_w - 4, self.overlay_y),
             (self.overlay_x + self.overlay_w + 4, self.overlay_y),
-            (self.overlay_x, screen_limit_y - dict_h),
+            (self.overlay_x, v_bottom - dict_h),
         ]
-        dict_x, dict_y = self.overlay_x, screen_limit_y - dict_h
+        dict_x, dict_y = self.overlay_x, v_bottom - dict_h
         for cand_x, cand_y in candidates:
-            cx = max(0, min(cand_x, screen_limit_x - card_w))
-            cy = max(0, min(cand_y, screen_limit_y - dict_h))
+            cx = max(v_left, min(cand_x, v_right - card_w))
+            cy = max(v_top, min(cand_y, v_bottom - dict_h))
             if not _dict_rect_overlaps(cx, cy, card_w, dict_h):
                 dict_x, dict_y = cx, cy
                 break
@@ -2557,19 +2557,22 @@ class KwaScreenApp:
         # Card position: centered above the bounding box
         screen_x = int(self.overlay_x + bbox['x'] + (bbox['width'] - card_w) // 2)
         screen_y = int(self.overlay_y + bbox['y'])
-        screen_x = max(0, screen_x)
         # Clamp card width so it doesn't extend off-screen
-        screen_limit = 1920  # rough fallback
         try:
-            screen_limit = self.root.winfo_screenwidth()
+            v_left = user32.GetSystemMetrics(76)
+            v_top = user32.GetSystemMetrics(77)
+            v_right = v_left + user32.GetSystemMetrics(78)
+            v_bottom = v_top + user32.GetSystemMetrics(79)
         except Exception:
-            pass
-        max_card_w = screen_limit - screen_x - 8
+            v_left, v_top, v_right, v_bottom = 0, 0, 1920, 1080
+
+        max_card_w = v_right - screen_x - 8
         if card_w > max_card_w:
             card_w = max(max_card_w, 180)
-            screen_x = max(0, screen_x)
-        if screen_x + card_w > screen_limit:
-            screen_x = screen_limit - card_w - 8
+            screen_x = max(v_left, screen_x)
+        if screen_x + card_w > v_right:
+            screen_x = v_right - card_w - 8
+        screen_x = max(v_left, screen_x)
 
         # Estimate card height (+ padding) — must match _render_card layout
         en_font = tkfont.Font(family="Segoe UI", size=self.font_size_en, weight="bold")
@@ -2594,8 +2597,8 @@ class KwaScreenApp:
 
         # Place card above the box (or below if not enough room)
         card_bottom = int(screen_y - 4)
-        card_top = max(0, card_bottom - card_h)
-        if card_top < 20:
+        card_top = max(v_top, card_bottom - card_h)
+        if card_top < v_top + 20:
             card_top = int(screen_y + bbox['height'] + 4)
             card_bottom = card_top + card_h
 
