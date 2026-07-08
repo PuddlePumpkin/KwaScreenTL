@@ -93,6 +93,7 @@ namespace KwaScreenTL_Launcher
             try { File.Delete(flagPath); } catch { }
 
             StatusText.Text = "KwaScreenTL is running in the system tray";
+            await Task.Delay(1500);
             SetupProgress.Visibility = Visibility.Collapsed;
             MinimizeToTray();
         }
