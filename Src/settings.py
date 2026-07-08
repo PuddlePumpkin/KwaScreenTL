@@ -80,6 +80,7 @@ class SettingsManager:
 
         a = self.app
         win = tk.Toplevel(a.root)
+        win.withdraw()
         win.title("Settings")
         win.resizable(False, False)
         win.attributes("-topmost", True)
@@ -91,6 +92,7 @@ class SettingsManager:
                 pass
         self.window = win
         self._setup_ui(win)
+        win.deiconify()
 
     def _setup_ui(self, win):
         a = self.app
