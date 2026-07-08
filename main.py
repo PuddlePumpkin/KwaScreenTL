@@ -1341,8 +1341,8 @@ class ScreenFreezerApp:
         win_local['h'] -= CROP_TOP + CROP_BOTTOM
 
         # Store overlay position for box window placement
-        self.overlay_x = win_rect['left'] + CROP_LEFT
-        self.overlay_y = win_rect['top'] + CROP_TOP
+        self.overlay_x = mx_off + win_local['x']
+        self.overlay_y = my_off + win_local['y']
         self.overlay_w = win_local['w']
         self.overlay_h = win_local['h']
         self.active = True
