@@ -856,6 +856,31 @@ def _sort_jamdict_entries(entries, pos='', hira='', word='', conj=''):
     return sorted(entries, key=lambda entry: (_reading_rank(entry), _word_rank(entry), _context_rank(entry), _sense_rank(entry), _pos_rank(entry), _form_rank(entry)))
 
 
+def _append_ocr_line(lines, text, x1, y1, x2, y2, vertical):
+    line_bbox = {'x': x1, 'y': y1, 'width': x2 - x1, 'height': y2 - y1}
+    chars = list(text)
+    wt = [1.0 for _ in chars]
+    if wt and chars[-1] in '。、！）」』】〙〛〕\u3001\u3002\uff01\uff09':
+        wt[-1] = 0.3
+    total_w = sum(wt)
+    accum = 0.0
+    words = []
+    for ch, cw in zip(chars, wt):
+        if vertical:
+            cw = cw / total_w * line_bbox['height']
+            y0 = line_bbox['y'] + int(accum)
+            accum += cw
+            y1w = line_bbox['y'] + int(accum)
+            words.append({'text': ch, 'bounding_rect': {'x': line_bbox['x'], 'y': y0, 'width': line_bbox['width'], 'height': y1w - y0}})
+        else:
+            cw = cw / total_w * line_bbox['width']
+            x0 = line_bbox['x'] + int(accum)
+            accum += cw
+            x1w = line_bbox['x'] + int(accum)
+            words.append({'text': ch, 'bounding_rect': {'x': x0, 'y': line_bbox['y'], 'width': x1w - x0, 'height': line_bbox['height']}})
+    lines.append({'text': text, 'words': words})
+
+
 class ScreenFreezerApp:
     def __init__(self):
         self.root = tk.Tk()
@@ -1474,13 +1499,12 @@ class ScreenFreezerApp:
         self._ocr_gen += 1
         threading.Thread(
             target=self.process_ocr,
-            args=(self.pil_img, win_local, self._ocr_gen),
+            args=(self.pil_img, win_local, self._ocr_gen, 100),
             daemon=True
         ).start()
 
     def run_ocr_paddle(self, win_crop):
-        """Run PaddleOCR on the crop, return lines with per-char bounding boxes.
-        Optionally pre-detects at a smaller scale to speed up region finding."""
+        """Run PaddleOCR on the crop, return lines with per-char bounding boxes."""
         ocr = get_paddle_ocr()
         import numpy as np
         img_array = np.array(win_crop)
@@ -1490,23 +1514,23 @@ class ScreenFreezerApp:
         use_pre = ds > 0
         oh, ow = img_array.shape[:2]
         lines = []
+        v_count = h_count = 0
 
         if use_pre:
-            # Pre-detect at reduced scale → full-res recognition
-            ratio = 100.0 / ds
-            dw = int(ow * ds / 100)
-            dh = int(oh * ds / 100)
+            dw = max(int(ow * ds / 100), 1)
+            dh = max(int(oh * ds / 100), 1)
+            ratio_x = ow / dw
+            ratio_y = oh / dh
             det_img = np.array(Image.fromarray(img_array).resize((dw, dh), Image.LANCZOS))
             det_gen = inner.text_det_model(det_img)
             det_items = list(det_gen)
-            v_count = h_count = 0
             if det_items:
                 r = det_items[0]
                 dt_polys = np.asarray(r.get('dt_polys', []), dtype=np.float64)
                 if dt_polys.ndim == 3 and dt_polys.shape[1:] == (4, 2):
                     for poly in dt_polys:
-                        xs = [p[0] * ratio for p in poly]
-                        ys = [p[1] * ratio for p in poly]
+                        xs = [p[0] * ratio_x for p in poly]
+                        ys = [p[1] * ratio_y for p in poly]
                         x1 = max(0, int(min(xs)))
                         y1 = max(0, int(min(ys)))
                         x2 = min(ow, int(max(xs)))
@@ -1537,28 +1561,30 @@ class ScreenFreezerApp:
                         if not texts:
                             continue
                         text = ''.join(texts)
-                        line_bbox = {'x': x1, 'y': y1, 'width': x2 - x1, 'height': y2 - y1}
-                        chars = list(text)
-                        wt = [1.0 for _ in chars]
-                        if wt and chars[-1] in '。、！）」』】〙〛〕\u3001\u3002\uff01\uff09':
-                            wt[-1] = 0.3
-                        total_w = sum(wt)
-                        accum = 0.0
-                        words = []
-                        for ch, cw in zip(chars, wt):
-                            if vertical:
-                                cw = cw / total_w * line_bbox['height']
-                                y0 = line_bbox['y'] + int(accum)
-                                accum += cw
-                                y1w = line_bbox['y'] + int(accum)
-                                words.append({'text': ch, 'bounding_rect': {'x': line_bbox['x'], 'y': y0, 'width': line_bbox['width'], 'height': y1w - y0}})
-                            else:
-                                cw = cw / total_w * line_bbox['width']
-                                x0 = line_bbox['x'] + int(accum)
-                                accum += cw
-                                x1w = line_bbox['x'] + int(accum)
-                                words.append({'text': ch, 'bounding_rect': {'x': x0, 'y': line_bbox['y'], 'width': x1w - x0, 'height': line_bbox['height']}})
-                        lines.append({'text': text, 'words': words})
+                        _append_ocr_line(lines, text, x1, y1, x2, y2, vertical)
+        else:
+            ocr_results = list(ocr.predict(img_array))
+            if ocr_results:
+                r = ocr_results[0]
+                dt_polys = np.asarray(r.get('dt_polys', []), dtype=np.float64)
+                rec_texts = r.get('rec_texts', [])
+                if dt_polys.ndim == 3 and dt_polys.shape[1:] == (4, 2):
+                    for poly, text in zip(dt_polys, rec_texts):
+                        if not text:
+                            continue
+                        xs = [p[0] for p in poly]
+                        ys = [p[1] for p in poly]
+                        x1 = max(0, int(min(xs)))
+                        y1 = max(0, int(min(ys)))
+                        x2 = min(ow, int(max(xs)))
+                        y2 = min(oh, int(max(ys)))
+                        if x2 - x1 < 8 or y2 - y1 < 8:
+                            continue
+                        vertical = (y2 - y1) > (x2 - x1)
+                        if vertical: v_count += 1
+                        else: h_count += 1
+                        _append_ocr_line(lines, text, x1, y1, x2, y2, vertical)
+
         self._last_ocr_vcount = v_count
         self._last_ocr_hcount = h_count
         return lines
