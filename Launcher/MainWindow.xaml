@@ -1,0 +1,16 @@
+﻿<Window x:Class="KwaScreenTL_Launcher.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="KwaScreenTL Setup" Height="200" Width="500"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="NoResize" WindowStyle="SingleBorderWindow">
+    <Grid Margin="24">
+        <StackPanel VerticalAlignment="Center">
+            <TextBlock x:Name="StatusText" Text="Setting up KwaScreenTL..."
+                       FontSize="14" TextAlignment="Center" Margin="0,0,0,16"/>
+            <ProgressBar x:Name="SetupProgress" Height="6"
+                         Minimum="0" Maximum="100" Value="0"
+                         IsIndeterminate="False"/>
+        </StackPanel>
+    </Grid>
+</Window>

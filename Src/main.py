@@ -20,6 +20,8 @@ import msvcrt
 from hotkeys import register_hotkey_win32, _hk_display, _vk_to_display, MOD_CONTROL, MOD_ALT, MOD_SHIFT, MOD_NOREPEAT
 from settings import SettingsManager
 _PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_APP_READY_FLAG = os.path.join(_PROJECT_DIR, "_app_ready.flag")
+os.makedirs(os.path.join(_PROJECT_DIR, "Data"), exist_ok=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 STD_ERROR_HANDLE = -12
 _log_path = os.path.join(_PROJECT_DIR, "app.log")
@@ -162,7 +164,7 @@ import webbrowser
 import urllib.parse
 
 # ── API keys (JSON) ─────────────────────────────────────────────────────────
-_API_KEYS_FILE = os.path.join(_PROJECT_DIR, "apikeys.json")
+_API_KEYS_FILE = os.path.join(_PROJECT_DIR, "Data", "apikeys.json")
 
 def _load_api_keys():
     try:
@@ -238,7 +240,7 @@ _trans_misses = 0
 _TRANSLATION_CACHE_MAX = 1000
 
 def _cache_path(service):
-    return os.path.join(_PROJECT_DIR, f"translation_cache_{service}.json")
+    return os.path.join(_PROJECT_DIR, "Data", f"translation_cache_{service}.json")
 
 def _load_cache(service):
     global _translation_cache
@@ -2998,6 +3000,29 @@ def main():
     app = KwaScreenApp()
     app._prewarm_event.wait()
     print("Application Ready\n")
+    try:
+        os.remove(_APP_READY_FLAG)
+    except FileNotFoundError:
+        pass
+    open(_APP_READY_FLAG, "w").close()
+
+    # ── Launcher watchdog: exit if parent process dies ──────────────────────
+    _launcher_pid = os.environ.get("KWASCREENTL_LAUNCHER_PID")
+    if _launcher_pid:
+        _PROCESS_QUERY_INFORMATION = 0x0400
+        _launcher_pid = int(_launcher_pid)
+        def _watch_parent():
+            while True:
+                time.sleep(30)
+                try:
+                    handle = ctypes.windll.kernel32.OpenProcess(_PROCESS_QUERY_INFORMATION, False, _launcher_pid)
+                    if not handle:
+                        os._exit(0)
+                    ctypes.windll.kernel32.CloseHandle(handle)
+                except Exception:
+                    os._exit(0)
+        threading.Thread(target=_watch_parent, daemon=True).start()
+    # ─────────────────────────────────────────────────────────────────────────
     print(f"  {app.hk_capture['display']:20s} Capture / Uncapture window for OCR / translation")
     print(f"  {app.hk_snip['display']:20s} Snip mode (drag-select a region) (Uses above for uncapture)")
     print(f"  {app.hk_settings['display']:20s} Settings panel")

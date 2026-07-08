@@ -7,5 +7,7 @@ jaconv
 jamdict
 deep-translator
 edge-tts
+requests
+numpy
 paddleocr
 onnxruntime

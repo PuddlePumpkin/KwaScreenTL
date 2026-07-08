@@ -13,6 +13,7 @@ from hotkeys import (
 
 
 _PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.makedirs(os.path.join(_PROJECT_DIR, "Data"), exist_ok=True)
 
 class SettingsManager:
     def __init__(self, app):
@@ -24,7 +25,7 @@ class SettingsManager:
         self.recording_prev = None
         self.hk_suppress_until = 0.0
         self.hk_btns = {}
-        self._file = os.path.join(_PROJECT_DIR, "settings.json")
+        self._file = os.path.join(_PROJECT_DIR, "Data", "settings.json")
 
     # ── Persistence ──────────────────────────────────────────────────────
 
@@ -82,6 +83,12 @@ class SettingsManager:
         win.title("Settings")
         win.resizable(False, False)
         win.attributes("-topmost", True)
+        icon_path = os.path.join(_PROJECT_DIR, "Launcher", "AppIcon.ico")
+        if os.path.exists(icon_path):
+            try:
+                win.iconbitmap(icon_path)
+            except Exception:
+                pass
         self.window = win
         self._setup_ui(win)
 

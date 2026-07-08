@@ -8,7 +8,7 @@ python -m venv "%VENV_DIR%"
 
 echo Installing dependencies...
 %PYTHON% -m pip install --upgrade pip >nul
-%PYTHON% -m pip install -r Docs\requirements.txt
+%PYTHON% -m pip install -r "%~dp0..\Docs\requirements.txt"
 %PYTHON% -m pip install paddleocr
 
 echo Attempting optional GPU acceleration (onnxruntime-gpu)...
