@@ -109,8 +109,16 @@ class SettingsManager:
             a.show_crop = self._show_crop_var.get()
             a.show_romaji = self._show_romaji_var.get()
             a.skip_non_japanese = self._skip_nj_var.get()
-            a.show_translation = self._show_translation_var.get()
+            
+            new_show_trans = self._show_translation_var.get()
+            if new_show_trans and a.translator == "none":
+                a.translator = "google"
+                self._translator_var.set("Google")
+                a._switch_translator("google")
+            
+            a.show_translation = new_show_trans
             self.save()
+            
             if old_translation != a.show_translation:
                 if a.show_translation:
                     a._retranslate_boxes()
@@ -137,21 +145,24 @@ class SettingsManager:
         sep_t = tk.Frame(win, height=1, bg="#c0c0c0")
         sep_t.pack(fill="x", padx=12)
 
-        self._translator_var = tk.StringVar(value="DeepL" if a.translator == "deepl" else "Google")
+        self._translator_var = tk.StringVar(value="DeepL" if a.translator == "deepl" else "Google" if a.translator == "google" else "None")
 
         def on_translator_change(*_):
             val = self._translator_var.get()
-            internal_val = "deepl" if val == "DeepL" else "google"
+            internal_val = "deepl" if val == "DeepL" else "google" if val == "Google" else "none"
             if internal_val != a.translator:
                 a._switch_translator(internal_val)
                 self.save()
+                if internal_val == "none":
+                    self._show_translation_var.set(False)
+                    on_toggle()
 
         self._translator_var.trace_add("write", on_translator_change)
 
         f_trans = tk.Frame(win)
         f_trans.pack(fill="x", padx=12, pady=3)
         tk.Label(f_trans, text="Service:", anchor="w", width=20).pack(side="left")
-        tk.OptionMenu(f_trans, self._translator_var, "DeepL", "Google").pack(side="left")
+        tk.OptionMenu(f_trans, self._translator_var, "DeepL", "Google", "None").pack(side="left")
 
         f_dict = tk.Frame(win)
         f_dict.pack(fill="x", padx=12, pady=3)
