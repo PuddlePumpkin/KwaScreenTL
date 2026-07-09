@@ -39,6 +39,7 @@ class SettingsManager:
             a.skip_non_japanese = data.get("skip_non_japanese", a.skip_non_japanese)
             a.show_translation = data.get("show_translation", True)
             a.translator = data.get("translator", a.translator)
+            a.dictionary_type = data.get("dictionary_type", "English")
             a.region_detect_scale = data.get("region_detect_scale", 100)
             hk = data.get("hotkeys", {})
             if "capture" in hk:
@@ -56,9 +57,10 @@ class SettingsManager:
             "show_crop": a.show_crop,
             "show_romaji": a.show_romaji,
             "skip_non_japanese": a.skip_non_japanese,
-            "show_translation": a.show_translation,
-            "translator": a.translator,
-            "region_detect_scale": a.region_detect_scale,
+                "show_translation": a.show_translation,
+                "translator": a.translator,
+                "dictionary_type": a.dictionary_type,
+                "region_detect_scale": a.region_detect_scale,
             "hotkeys": {
                 "capture": a.hk_capture,
                 "snip": a.hk_snip,
@@ -150,8 +152,24 @@ class SettingsManager:
         tk.Label(f_trans, text="Service:", anchor="w", width=20).pack(side="left")
         tk.OptionMenu(f_trans, self._translator_var, "deepl", "google").pack(side="left")
 
+        f_dict = tk.Frame(win)
+        f_dict.pack(fill="x", padx=12, pady=3)
+        tk.Label(f_dict, text="Dictionary:", anchor="w", width=20).pack(side="left")
+
+        self._dict_type_var = tk.StringVar(value=a.dictionary_type)
+        def on_dict_type_change(*_):
+            val = self._dict_type_var.get()
+            if val != a.dictionary_type:
+                a.dictionary_type = val
+                self.save()
+                if not a._check_dict_files():
+                    self._dict_type_var.set(a.dictionary_type)
+                a._retranslate_boxes()
+        self._dict_type_var.trace_add("write", on_dict_type_change)
+        tk.OptionMenu(f_dict, self._dict_type_var, "English", "Monolingual").pack(side="left")
+ 
         tk.Label(win, text="OCR Filter", font=("Segoe UI", 9, "bold"),
-                 anchor="w").pack(fill="x", padx=12, pady=(10, 2))
+                anchor="w").pack(fill="x", padx=12, pady=(10, 2))
         sep2 = tk.Frame(win, height=1, bg="#c0c0c0")
         sep2.pack(fill="x", padx=12)
         tk.Checkbutton(win, text="Skip non-Japanese text", variable=self._skip_nj_var,

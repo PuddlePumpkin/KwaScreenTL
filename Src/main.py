@@ -15,6 +15,116 @@ from concurrent.futures import ThreadPoolExecutor
 from PIL import Image, ImageTk
 import tkinter.font as tkfont
 
+def _nlines(font_obj, text, wrap_width):
+    if not text:
+        return 0
+    tw = font_obj.measure(text)
+    return max(1, -(-tw // wrap_width))
+
+def _get_monolingual_meanings(text):
+    """
+    Query sankokudict.db for a word and return structured sense data.
+    Returns: [{'kanji': str, 'kana': str, 'gloss': str, 'pos': [str],
+               'antonyms': [str], 'xrefs': [str], 'etym': str}] or None
+    """
+    db_path = os.path.join(_PROJECT_DIR, "KwaScreenTLMonolingual", "sankokudict.db")
+    if not os.path.exists(db_path):
+        return None
+    try:
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+
+        # Find idseq from Kana or Kanji
+        idseq = None
+        cur.execute("SELECT idseq FROM Kana WHERE text = ?", (text,))
+        row = cur.fetchone()
+        if row:
+            idseq = row[0]
+        else:
+            cur.execute("SELECT idseq FROM Kanji WHERE text = ?", (text,))
+            row = cur.fetchone()
+            if row:
+                idseq = row[0]
+
+        if idseq is None:
+            conn.close()
+            return None
+
+        # Get kanji and kana
+        cur.execute("SELECT text FROM Kanji WHERE idseq = ?", (idseq,))
+        kanji_row = cur.fetchone()
+        kanji = kanji_row[0] if kanji_row else ""
+
+        cur.execute("SELECT text FROM Kana WHERE idseq = ?", (idseq,))
+        kana_row = cur.fetchone()
+        kana = kana_row[0] if kana_row else ""
+
+        # Get etymology
+        cur.execute("SELECT text FROM Etym WHERE idseq = ?", (idseq,))
+        etym_row = cur.fetchone()
+        etym = etym_row[0] if etym_row else ""
+
+        # Get all senses
+        cur.execute("SELECT ID FROM Sense WHERE idseq = ? ORDER BY ID", (idseq,))
+        sense_ids = [r[0] for r in cur.fetchall()]
+
+        results = []
+        for sid in sense_ids:
+            # Gloss
+            cur.execute("SELECT text FROM SenseGloss WHERE sid = ?", (sid,))
+            gloss_rows = cur.fetchall()
+            if not gloss_rows:
+                continue
+            gloss = gloss_rows[0][0]
+
+            # POS
+            cur.execute("SELECT text FROM pos WHERE sid = ?", (sid,))
+            pos = [r[0] for r in cur.fetchall()]
+
+            # Antonyms
+            cur.execute("SELECT text FROM antonym WHERE sid = ?", (sid,))
+            antonyms = [r[0] for r in cur.fetchall()]
+
+            # Xrefs
+            cur.execute("SELECT text FROM xref WHERE sid = ?", (sid,))
+            xrefs = [r[0] for r in cur.fetchall()]
+
+            results.append({
+                'kanji': kanji,
+                'kana': kana,
+                'gloss': gloss,
+                'pos': pos,
+                'antonyms': antonyms,
+                'xrefs': xrefs,
+                'etym': etym,
+            })
+
+        conn.close()
+        return results if results else None
+    except Exception:
+        return None
+
+
+def _get_kanji_info(char):
+    """Query Kanki table in kankidict.db for a single character."""
+    db_path = os.path.join(_PROJECT_DIR, "KwaScreenTLMonolingual", "kankidict.db")
+    if not os.path.exists(db_path):
+        return None
+    try:
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT on_readings, kun_readings, gloss FROM Kanki WHERE character = ?", (char,))
+        row = cur.fetchone()
+        conn.close()
+        if row:
+            return {"on": row[0], "kun": row[1], "gloss": row[2]}
+        return None
+    except Exception:
+        return None
+
+
 # PaddlePaddle 3.3 PIR compatibility workaround — must be set before any
 # paddle/paddlex import, so it goes right at the top.
 os.environ["FLAGS_enable_pir_with_executor_in_serial_mode"] = "0"
@@ -27,6 +137,8 @@ import msvcrt
 from hotkeys import register_hotkey_win32, _hk_display, _vk_to_display, MOD_CONTROL, MOD_ALT, MOD_SHIFT, MOD_NOREPEAT
 from settings import SettingsManager
 _PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SANKOKU_DB = os.path.join(_PROJECT_DIR, "KwaScreenTLMonolingual", "sankokudict.db")
+_KANKI_DB = os.path.join(_PROJECT_DIR, "KwaScreenTLMonolingual", "kankidict.db")
 _APP_READY_FLAG = os.path.join(_PROJECT_DIR, "_app_ready.flag")
 os.makedirs(os.path.join(_PROJECT_DIR, "Data"), exist_ok=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -387,6 +499,8 @@ def _get_english_meanings(literal):
     except Exception:
         return []
 
+
+
 def contains_japanese(text):
     """Check if the text contains any Japanese characters (Hiragana, Katakana, Kanji)."""
     # Unicode ranges:
@@ -403,6 +517,53 @@ def _is_kanji(ch):
 def _is_kana(ch):
     """Check if a character is Hiragana or Katakana."""
     return '\u3040' <= ch <= '\u30ff'
+
+def _generate_fuzzy_candidates(word):
+    """Generate plausible spelling variations for fuzzy fallback lookup."""
+    if not word:
+        return []
+    seen = set()
+    candidates = []
+    def _add(w):
+        if w != word and w not in seen:
+            seen.add(w)
+            candidates.append(w)
+    # 1. Add/remove trailing prolonged sound mark (ー)
+    if word.endswith('ー'):
+        _add(word[:-1])
+    else:
+        _add(word + 'ー')
+    # 2. Replace all ー with the appropriate kana vowel
+    #    (ー after ア/カ/サ/… → ア, after イ/キ/… → イ, etc.)
+    vowel_map = {'ア': 'ア', 'カ': 'ア', 'ガ': 'ア', 'サ': 'ア', 'ザ': 'ア',
+                 'タ': 'ア', 'ダ': 'ア', 'ナ': 'ア', 'ハ': 'ア', 'バ': 'ア',
+                 'パ': 'ア', 'マ': 'ア', 'ヤ': 'ア', 'ラ': 'ア', 'ワ': 'ア',
+                 'イ': 'イ', 'キ': 'イ', 'ギ': 'イ', 'シ': 'イ', 'ジ': 'イ',
+                 'チ': 'イ', 'ヂ': 'イ', 'ニ': 'イ', 'ヒ': 'イ', 'ビ': 'イ',
+                 'ピ': 'イ', 'ミ': 'イ', 'リ': 'イ',
+                 'ウ': 'ウ', 'ク': 'ウ', 'グ': 'ウ', 'ス': 'ウ', 'ズ': 'ウ',
+                 'ツ': 'ウ', 'ヅ': 'ウ', 'ヌ': 'ウ', 'フ': 'ウ', 'ブ': 'ウ',
+                 'プ': 'ウ', 'ム': 'ウ', 'ユ': 'ウ', 'ル': 'ウ',
+                 'エ': 'エ', 'ケ': 'エ', 'ゲ': 'エ', 'セ': 'エ', 'ゼ': 'エ',
+                 'テ': 'エ', 'デ': 'エ', 'ネ': 'エ', 'ヘ': 'エ', 'ベ': 'エ',
+                 'ペ': 'エ', 'メ': 'エ', 'レ': 'エ',
+                 'オ': 'オ', 'コ': 'オ', 'ゴ': 'オ', 'ソ': 'オ', 'ゾ': 'オ',
+                 'ト': 'オ', 'ド': 'オ', 'ノ': 'オ', 'ホ': 'オ', 'ボ': 'オ',
+                 'ポ': 'オ', 'モ': 'オ', 'ヨ': 'オ', 'ロ': 'オ', 'ヲ': 'オ'}
+    if 'ー' in word:
+        result = []
+        for i, ch in enumerate(word):
+            if ch == 'ー' and i > 0:
+                result.append(vowel_map.get(word[i-1], 'ー'))
+            else:
+                result.append(ch)
+        _add(''.join(result))
+    # 3. Small tsu normalization (ッ → ツ)
+    if 'ッ' in word:
+        _add(word.replace('ッ', 'ツ'))
+    if 'っ' in word:
+        _add(word.replace('っ', 'つ'))
+    return candidates
 
 def _segment_jp(text):
     """Split text into runs of (segment, is_japanese)."""
@@ -952,6 +1113,7 @@ class KwaScreenApp:
         self.skip_non_japanese = SKIP_NON_JAPANESE
         self.show_translation = True
         self.translator = TRANSLATOR
+        self.dictionary_type = "English"
         self.region_detect_scale = 100
         self.japanese_font = "Meiryo"
         self.japanese_font_size = 16
@@ -964,6 +1126,9 @@ class KwaScreenApp:
         self.settings = SettingsManager(self)
         self.settings.load()
         _load_cache(self.translator)
+
+        if self.dictionary_type == "Monolingual":
+            self.root.after(0, self._check_dict_files)
 
         # Pre-warm PaddleOCR in background so first scan doesn't pay model-load cost
         self._prewarm_event = threading.Event()
@@ -1181,6 +1346,29 @@ class KwaScreenApp:
         self.settings.save()
         if val == "deepl":
             self._ensure_deepl_key()
+
+    def _check_dict_files(self):
+        has_sankoku = os.path.exists(_SANKOKU_DB)
+        has_kanki = os.path.exists(_KANKI_DB)
+        if has_sankoku and has_kanki:
+            return True
+        msg = None
+        if not has_sankoku and not has_kanki:
+            msg = ("三省堂 and 漢検 dictionary files not found.\n\n"
+                   "Phrases will use JMdict/英和辞典, kanji info will be limited.\n\n"
+                   "Please read the README in the KwaScreenTLMonolingual folder for setup instructions.")
+            self.dictionary_type = "English"
+            self.settings.save()
+        elif not has_sankoku:
+            msg = ("三省堂 dictionary (sankokudict.db) not found.\n\n"
+                   "Only kanji info will be shown in monolingual mode; phrases will use JMdict/英和辞典.")
+        elif not has_kanki:
+            msg = ("漢検 dictionary (kankidict.db) not found.\n\n"
+                   "Kanji info will only use JMdict data.")
+        if msg:
+            parent = self.settings.window or self.root
+            tkmb.showwarning("Monolingual Dictionary", msg, parent=parent)
+        return has_sankoku and has_kanki
 
     def _ensure_deepl_key(self):
         if get_deepl_api_key():
@@ -1886,11 +2074,12 @@ class KwaScreenApp:
             self._selection_start = -1
             self._selection_end = -1
         else:
-            # Drag → copy selected text to clipboard, keep highlight
+            # Drag → copy selected text to clipboard + look up in dict, keep highlight
             selected = ''.join(w['text'] for wi, w in enumerate(words) if start <= wi <= end)
             if selected:
                 self.root.clipboard_clear()
                 self.root.clipboard_append(selected)
+                self._dict_lookup_selection(selected, idx)
 
     def _get_selected_text(self):
         """Return the currently selected text, or None."""
@@ -2040,6 +2229,26 @@ class KwaScreenApp:
         t = threading.Thread(target=self._dict_lookup_thread, args=(word, card_w, seq, single_char, pos, combined, conj, hira), daemon=True)
         t.start()
 
+    def _dict_lookup_selection(self, word, box_idx):
+        """Trigger a dict lookup for arbitrary selected text (both mono and bilingual)."""
+        if not word or not contains_japanese(word):
+            return
+        box = self.ocr_boxes[box_idx] if (0 <= box_idx < len(self.ocr_boxes)) else self._card_box
+        if not box:
+            return
+        card_w = max(box.get('w', 200), 200, 340)
+        self._dict_lookup_seq += 1
+        seq = self._dict_lookup_seq
+        self._withdraw_dict_card()
+        single_char = len(word) == 1 and _is_kanji(word)
+        import threading
+        t = threading.Thread(
+            target=self._dict_lookup_thread,
+            args=(word, card_w, seq, single_char, '', [], '', ''),
+            daemon=True
+        )
+        t.start()
+
     def _get_base_form_from_jamadict(self, word):
         """Return canonical form for inflected Japanese words based on JMdict entries."""
         jam = _get_jam()
@@ -2075,16 +2284,81 @@ class KwaScreenApp:
         return word
 
     def _dict_lookup_thread(self, word, card_w, seq, single_char=False, pos='', combined=None, conj='', hira=''):
-        """Background thread: perform jamdict lookup and post result to main thread."""
+        """Background thread: perform lookup and post result to main thread."""
         try:
+            if self.dictionary_type == "Monolingual":
+                meanings = _get_monolingual_meanings(word)
+                if not meanings:
+                    for fw in _generate_fuzzy_candidates(word):
+                        meanings = _get_monolingual_meanings(fw)
+                        if meanings:
+                            word = fw
+                            break
+                if meanings:
+                    # Get kanji data from jamdict if single_char
+                    kanji_data = []
+                    if single_char:
+                        jam = _get_jam()
+                        kanji_chars = [c for c in word if _is_kanji(c)]
+                        for uk in set(kanji_chars):
+                            try:
+                                char_res = jam.lookup(uk)
+                                if char_res and char_res.chars:
+                                    kanji_data.append(char_res.chars[0])
+                            except Exception:
+                                pass
+
+                    # Build mock entry mimicking jamdict structure
+                    class MonolingualSense:
+                        def __init__(self, gloss, pos):
+                            self.gloss = [type('Gloss', (), {'text': gloss})]
+                            self.pos = pos
+
+                    entry_kanji = meanings[0]['kanji'] or ""
+                    entry_kana = meanings[0]['kana']
+
+                    senses = [MonolingualSense(m['gloss'], m['pos']) for m in meanings]
+
+                    class MonolingualEntry:
+                        def __init__(self, senses, kana, kanji=""):
+                            self.kanji_forms = [type('KForm', (), {'text': kanji})] if kanji else []
+                            self.kana_forms = [type('KForm', (), {'text': kana})]
+                            self.senses = senses
+                            self.etym = meanings[0]['etym']
+                            self.antonyms = []
+                            self.xrefs = []
+                            seen_ant = set()
+                            seen_xr = set()
+                            for m in meanings:
+                                for a in m['antonyms']:
+                                    if a not in seen_ant:
+                                        self.antonyms.append(a)
+                                        seen_ant.add(a)
+                                for x in m['xrefs']:
+                                    if x not in seen_xr:
+                                        self.xrefs.append(x)
+                                        seen_xr.add(x)
+
+                    all_entries = [MonolingualEntry(senses, entry_kana, entry_kanji)]
+                    mock_res = type('MockResult', (), {'entries': all_entries, 'chars': kanji_data})
+                    self.root.after(0, self._dict_lookup_show, word, card_w, seq, mock_res, kanji_data, single_char, pos, conj, hira)
+                    return
+                # Fall through to jamdict for fallback
+
             jam = _get_jam()
             
             # Collect all candidate forms to try, including richer combined forms
+
             candidates = [word]
+            
+            # Try fuzzy spelling variations
+            for fw in _generate_fuzzy_candidates(word):
+                if fw not in candidates:
+                    candidates.append(fw)
             
             # Try base form for inflections
             base_form = self._get_base_form_from_jamadict(word)
-            if base_form != word:
+            if base_form != word and base_form not in candidates:
                 candidates.append(base_form)
             
             # Also look up combined forms (over-split words like ござい+ます)
@@ -2197,34 +2471,27 @@ class KwaScreenApp:
                 user32.SetLayeredWindowAttributes(hwnd, 0, 0xFA, LWA_ALPHA)
             except Exception:
                 pass
-        # Keep window withdrawn until geometry is set to avoid flicker.
 
         canvas = self._dict_canvas
         canvas.delete("all")
 
-        if single_char:
-            card_w = max(card_w, 400)
-
         title_font = (self.japanese_font, 11, "bold")
         body_font = ("Segoe UI", 10)
+        mono_body_font = (self.japanese_font, 10)
         pos_font = ("Segoe UI", 8, "italic")
         kanji_info_font = (self.japanese_font, 9)
         jp_font = (self.japanese_font, 10)
 
         tf = tkfont.Font(font=title_font)
         bf = tkfont.Font(font=body_font)
+        mbf = tkfont.Font(font=mono_body_font)
         pf = tkfont.Font(font=pos_font)
         jf = tkfont.Font(font=jp_font)
         title_h = tf.metrics("linespace")
         body_h = bf.metrics("linespace")
+        mono_body_h = mbf.metrics("linespace")
         pos_h = pf.metrics("linespace")
         jp_h = jf.metrics("linespace")
-
-        def _nlines(font_obj, text, wrap_width):
-            if not text:
-                return 0
-            tw = font_obj.measure(text)
-            return max(1, -(-tw // wrap_width))
 
         pad_x = 8
         ly = 6
@@ -2236,57 +2503,116 @@ class KwaScreenApp:
             ly += pos_h + 2
 
         self._dict_top_entry = None
-
-        # POS boost: only trust it for closed-class / grammatical words where
-        # the tag is a reliable disambiguation signal. For broad open-class
-        # categories (noun, verb, adjective, adverb …) many unrelated JMdict
-        # entries share the same POS so the contextual reading is better.
         if not single_char:
-            entries = _sort_jamdict_entries(list(res.entries), pos=pos, hira=hira, word=word, conj=conj)
-            if DEBUG_DICT_LOG:
-                _append_debug_log(f"dict lookup show: word={word!r} pos={pos!r} conj={conj!r} hira={hira!r} entries={len(entries)}")
-                for entry in entries[:4]:
+            if self.dictionary_type == "Monolingual":
+                if res.entries:
+                    entry = res.entries[0]
+                    self._dict_top_entry = entry
+
+                    kanji_texts = [k.text for k in getattr(entry, 'kanji_forms', [])]
+                    kana_texts = [k.text for k in getattr(entry, 'kana_forms', [])]
+                    header = ""
+                    if kanji_texts:
+                        header += " / ".join(kanji_texts)
+                    if kana_texts:
+                        if header:
+                            header += f" ({', '.join(kana_texts)})"
+                        else:
+                            header += ", ".join(kana_texts)
+
+                    canvas.create_text(pad_x, ly, text=header, font=title_font,
+                                       fill="#a31515", anchor="nw", width=wrap_w)
+                    ly += _nlines(tf, header, wrap_w) * title_h + 4
+
+                    meta_text = ""
+                    pos_tags = []
+                    for sense in entry.senses:
+                        if getattr(sense, 'pos', None):
+                            pos_tags.extend(sense.pos)
+                    if pos_tags:
+                        meta_text += " • ".join(sorted(set(pos_tags)))
+                    etym = getattr(entry, 'etym', None)
+                    if etym:
+                        if meta_text:
+                            meta_text += " "
+                        meta_text += f"〔{etym}〕"
+                    if meta_text:
+                        canvas.create_text(pad_x, ly, text=meta_text.strip(), font=pos_font,
+                                           fill="#8e8e93", anchor="nw", width=wrap_w_inner)
+                        ly += _nlines(pf, meta_text.strip(), wrap_w_inner) * pos_h + 4
+
+                    for si, sense in enumerate(entry.senses):
+                        gloss_text = sense.gloss[0].text if sense.gloss else ""
+                        num = f"{si + 1}."
+                        num_w = pf.measure(num)
+                        canvas.create_text(pad_x, ly, text=num, font=pos_font,
+                                           fill="#ff9500", anchor="nw")
+                        canvas.create_text(pad_x + 6 + num_w + 2, ly, text=gloss_text, font=mbf,
+                                           fill="#1c1c1e", anchor="nw", width=wrap_w_inner - num_w - 2)
+                        text_h = _nlines(mbf, gloss_text, wrap_w_inner - num_w - 2) * mono_body_h
+                        ly += max(pos_h, text_h) + 4
+
+                    antonyms = getattr(entry, 'antonyms', [])
+                    if antonyms:
+                        ly += 4
+                        ant_text = "対義語: " + "・".join(antonyms)
+                        canvas.create_text(pad_x + 6, ly, text=ant_text, font=pos_font,
+                                           fill="#8e8e93", anchor="nw", width=wrap_w_inner)
+                        ly += _nlines(pf, ant_text, wrap_w_inner) * pos_h + 2
+
+                    xrefs = getattr(entry, 'xrefs', [])
+                    if xrefs:
+                        xr_text = "参照: " + "・".join(xrefs)
+                        canvas.create_text(pad_x + 6, ly, text=xr_text, font=pos_font,
+                                           fill="#8e8e93", anchor="nw", width=wrap_w_inner)
+                        ly += _nlines(pf, xr_text, wrap_w_inner) * pos_h + 2
+            else:
+                entries = _sort_jamdict_entries(list(res.entries), pos=pos, hira=hira, word=word, conj=conj)
+                if DEBUG_DICT_LOG:
+                    _append_debug_log(f"dict lookup show: word={word!r} pos={pos!r} conj={conj!r} hira={hira!r} entries={len(entries)}")
+                    for entry in entries[:4]:
+                        kanji_texts = [k.text for k in entry.kanji_forms]
+                        kana_texts = [k.text for k in entry.kana_forms]
+                        glosses = [g.text for s in entry.senses[:1] for g in getattr(s, 'gloss', [])]
+                        _append_debug_log(f"  ranked: kanji={kanji_texts} kana={kana_texts} gloss={glosses}")
+                
+                preferred_entries = list(entries)
+                if pos == 'verb' and hira and any(ch in hira for ch in 'おり'):
+                    for i, entry in enumerate(preferred_entries):
+                        glosses = [g.text.lower() for s in entry.senses for g in getattr(s, 'gloss', [])]
+                        if any(g.startswith('to be') or g.startswith('to exist') or g.startswith('to stay') for g in glosses):
+                            preferred_entries.insert(0, preferred_entries.pop(i))
+                            break
+                
+                for idx, entry in enumerate(preferred_entries[:4]):
+                    if idx == 0:
+                        self._dict_top_entry = entry
                     kanji_texts = [k.text for k in entry.kanji_forms]
                     kana_texts = [k.text for k in entry.kana_forms]
-                    glosses = [g.text for s in entry.senses[:1] for g in getattr(s, 'gloss', [])]
-                    _append_debug_log(f"  ranked: kanji={kanji_texts} kana={kana_texts} gloss={glosses}")
+                    header = ""
+                    if kanji_texts:
+                        header += " / ".join(kanji_texts)
+                    if kana_texts:
+                        if header:
+                            header += f" ({', '.join(kana_texts)})"
+                        else:
+                            header += ", ".join(kana_texts)
+                    
+                    canvas.create_text(pad_x, ly, text=header, font=title_font, fill="#0066cc", anchor="nw", width=wrap_w)
+                    ly += _nlines(tf, header, wrap_w) * title_h + 4
+                    
+                    for si, sense in enumerate(entry.senses[:3]):
+                        glosses = ", ".join(g.text for g in sense.gloss)
+                        pos_str = " • ".join(sense.pos) if sense.pos else ""
+                        
+                        if pos_str:
+                            canvas.create_text(pad_x + 6, ly, text=pos_str, font=pos_font, fill="#8e8e93", anchor="nw", width=wrap_w_inner)
+                            ly += _nlines(pf, pos_str, wrap_w_inner) * pos_h + 2
+                        
+                        def_text = f"{si + 1}. {glosses}"
+                        canvas.create_text(pad_x + 6, ly, text=def_text, font=body_font, fill="#1c1c1e", anchor="nw", width=wrap_w_inner)
+                        ly += _nlines(bf, def_text, wrap_w_inner) * body_h + 4
 
-            preferred_entries = list(entries)
-            if pos == 'verb' and hira and any(ch in hira for ch in 'おり'):
-                for i, entry in enumerate(preferred_entries):
-                    glosses = [g.text.lower() for s in entry.senses for g in getattr(s, 'gloss', [])]
-                    if any(g.startswith('to be') or g.startswith('to exist') or g.startswith('to stay') for g in glosses):
-                        preferred_entries.insert(0, preferred_entries.pop(i))
-                        break
-
-            for idx, entry in enumerate(preferred_entries[:4]):
-                if idx == 0:
-                    self._dict_top_entry = entry
-                kanji_texts = [k.text for k in entry.kanji_forms]
-                kana_texts = [k.text for k in entry.kana_forms]
-                header = ""
-                if kanji_texts:
-                    header += " / ".join(kanji_texts)
-                if kana_texts:
-                    if header:
-                        header += f" ({', '.join(kana_texts)})"
-                    else:
-                        header += ", ".join(kana_texts)
-
-                canvas.create_text(pad_x, ly, text=header, font=title_font, fill="#0066cc", anchor="nw", width=wrap_w)
-                ly += _nlines(tf, header, wrap_w) * title_h + 4
-
-                for si, sense in enumerate(entry.senses[:3]):
-                    glosses = ", ".join(g.text for g in sense.gloss)
-                    pos_str = " • ".join(sense.pos) if sense.pos else ""
-
-                    if pos_str:
-                        canvas.create_text(pad_x + 6, ly, text=pos_str, font=pos_font, fill="#8e8e93", anchor="nw", width=wrap_w_inner)
-                        ly += _nlines(pf, pos_str, wrap_w_inner) * pos_h + 2
-
-                    def_text = f"{si + 1}. {glosses}"
-                    canvas.create_text(pad_x + 6, ly, text=def_text, font=body_font, fill="#1c1c1e", anchor="nw", width=wrap_w_inner)
-                    ly += _nlines(bf, def_text, wrap_w_inner) * body_h + 4
 
         kanji_chars = [c for c in word if _is_kanji(c)]
         if self._dict_top_entry is not None:
@@ -2294,6 +2620,9 @@ class KwaScreenApp:
             if hovered_chunk:
                 _log_click_event(self._card_data, hovered_chunk, top_entry=self._dict_top_entry)
 
+        if single_char and not kanji_chars:
+            self._withdraw_dict_card()
+            return
         if single_char and kanji_chars:
             unique_kanjis = []
             seen_k = set()
@@ -2302,23 +2631,29 @@ class KwaScreenApp:
                     seen_k.add(c)
                     unique_kanjis.append(c)
 
+            _rendered_any = False
             for ui, uk in enumerate(unique_kanjis):
-                if ui > 0:
-                    ly += 6
-                    canvas.create_line(pad_x, ly, card_w - pad_x, ly, fill="#e5e5ea")
-                    ly += 8
-
                 char_obj = None
                 for c_obj in kanji_data:
                     if c_obj.literal == uk:
                         char_obj = c_obj
                         break
 
+                ki = _get_kanji_info(uk) if self.dictionary_type == "Monolingual" else None
+                has_data = bool(char_obj) or bool(ki)
+                if not has_data:
+                    continue
+
+                if _rendered_any:
+                    ly += 6
+                    canvas.create_line(pad_x, ly, card_w - pad_x, ly, fill="#e5e5ea")
+                    ly += 8
+                _rendered_any = True
+
                 if char_obj:
                     grade = getattr(char_obj, 'grade', None)
                     jlpt = getattr(char_obj, 'jlpt', None)
                     strokes = getattr(char_obj, 'stroke_count', None)
-
                     try:
                         if grade is not None:
                             grade = int(grade)
@@ -2329,7 +2664,6 @@ class KwaScreenApp:
                             jlpt = int(jlpt)
                     except (ValueError, TypeError):
                         jlpt = None
-
                     jlpt_str = ""
                     if jlpt is not None:
                         if jlpt == 4:
@@ -2342,68 +2676,112 @@ class KwaScreenApp:
                             jlpt_str = "N1"
                         else:
                             jlpt_str = f"L{jlpt}"
+                else:
+                    grade = None
+                    jlpt = None
+                    strokes = None
+                    jlpt_str = ""
 
-                    # Blue kanji title
-                    canvas.create_text(pad_x, ly, text=f"{uk} — Kanji Info", font=title_font, fill="#0066cc", anchor="nw")
-                    ly += title_h + 4
+                # Blue kanji title
+                canvas.create_text(pad_x, ly, text=f"{uk} — Kanji Info", font=title_font, fill="#0066cc", anchor="nw")
+                ly += title_h + 4
 
-                    # Meta info line (JLPT, Grade, strokes)
-                    meta_parts = []
-                    if jlpt_str:
-                        meta_parts.append(f"JLPT: {jlpt_str}")
-                    if grade is not None:
-                        grade_str = f"G{grade}"
-                        if 1 <= grade <= 6:
-                            grade_str += " (Elem)"
-                        elif grade == 8:
-                            grade_str += " (Sec)"
-                        meta_parts.append(f"Grade: {grade_str}")
-                    if strokes is not None:
-                        meta_parts.append(f"{strokes} strokes")
-                    if meta_parts:
-                        meta_text = " • ".join(meta_parts)
-                        canvas.create_text(pad_x + 6, ly, text=meta_text, font=pos_font, fill="#8e8e93", anchor="nw", width=wrap_w_inner)
-                        ly += _nlines(pf, meta_text, wrap_w_inner) * pos_h + 4
+                # Meta info line (JLPT, Grade, strokes)
+                meta_parts = []
+                if jlpt_str:
+                    meta_parts.append(f"JLPT: {jlpt_str}")
+                if grade is not None:
+                    grade_str = f"G{grade}"
+                    if 1 <= grade <= 6:
+                        grade_str += " (Elem)"
+                    elif grade == 8:
+                        grade_str += " (Sec)"
+                    meta_parts.append(f"Grade: {grade_str}")
+                if strokes is not None:
+                    meta_parts.append(f"{strokes} strokes")
+                if meta_parts:
+                    meta_text = " • ".join(meta_parts)
+                    canvas.create_text(pad_x + 6, ly, text=meta_text, font=pos_font, fill="#8e8e93", anchor="nw", width=wrap_w_inner)
+                    ly += _nlines(pf, meta_text, wrap_w_inner) * pos_h + 4
 
-                    # Meanings
-                    try:
+                # Meanings
+                try:
+                    if self.dictionary_type == "Monolingual" and ki:
+                        gloss = ki['gloss']
+                        _circled = set('①②③④⑤⑥⑦⑧⑨⑩')
+                        parts = re.split(r'([①②③④⑤⑥⑦⑧⑨⑩])', gloss)
+                        i = 0
+                        while i < len(parts):
+                            if len(parts[i]) == 1 and parts[i] in _circled:
+                                num = parts[i]
+                                rest = parts[i+1] if i+1 < len(parts) else ''
+                                i += 2
+                            else:
+                                num = ''
+                                rest = parts[i]
+                                i += 1
+                            text = rest.strip()
+                            if not text and not num:
+                                continue
+                            if num:
+                                cw = jf.measure(num)
+                                canvas.create_text(pad_x + 6, ly, text=num, font=jp_font, fill="#ff9500", anchor="nw")
+                                canvas.create_text(pad_x + 6 + cw, ly, text=text, font=jp_font, fill="#1c1c1e", anchor="nw", width=wrap_w_inner - cw)
+                                ly += _nlines(jf, text, wrap_w_inner - cw) * jp_h + 4
+                            else:
+                                canvas.create_text(pad_x + 6, ly, text=text, font=jp_font, fill="#1c1c1e", anchor="nw", width=wrap_w_inner)
+                                ly += _nlines(jf, text, wrap_w_inner) * jp_h + 4
+                    else:
                         eng = _get_english_meanings(uk)
                         if eng:
-                            content = ", ".join(eng)
+                            meanings = eng
+                        else:
+                            meanings = []
+                        if meanings:
+                            content = ", ".join(meanings)
                             canvas.create_text(pad_x + 6, ly, text=content, font=body_font, fill="#1c1c1e", anchor="nw", width=wrap_w_inner)
                             ly += _nlines(bf, content, wrap_w_inner) * body_h + 4
-                    except Exception:
-                        pass
-
-                    # On and Kun readings
-                    try:
+                except Exception:
+                    pass
+                
+                # On and Kun readings
+                try:
+                    if self.dictionary_type == "Monolingual" and ki:
+                        on_content = ki['on'] if ki['on'] else ""
+                        kun_content = ki['kun'] if ki['kun'] else ""
+                    else:
                         rm_groups = getattr(char_obj, 'rm_groups', [])
-                        if rm_groups:
-                            on_all = []
-                            kun_all = []
-                            for g in rm_groups:
-                                for r in getattr(g, 'on_readings', []) or []:
-                                    on_all.append(str(r))
-                                for r in getattr(g, 'kun_readings', []) or []:
-                                    kun_all.append(str(r))
-                            if on_all:
-                                on_content = " • ".join(on_all)
-                                canvas.create_text(pad_x + 6, ly, text="On:", font=("Segoe UI", 10, "bold"), fill="#8e8e93", anchor="nw")
-                                ly += jp_h + 1
-                                canvas.create_text(pad_x + 6, ly, text=on_content, font=jp_font, fill="#1c1c1e", anchor="nw", width=wrap_w_inner)
-                                ly += _nlines(jf, on_content, wrap_w_inner) * jp_h + 4
-                            if kun_all:
-                                kun_content = " • ".join(kun_all)
-                                canvas.create_text(pad_x + 6, ly, text="Kun:", font=("Segoe UI", 10, "bold"), fill="#8e8e93", anchor="nw")
-                                ly += jp_h + 1
-                                canvas.create_text(pad_x + 6, ly, text=kun_content, font=jp_font, fill="#1c1c1e", anchor="nw", width=wrap_w_inner)
-                                ly += _nlines(jf, kun_content, wrap_w_inner) * jp_h + 4
-                    except Exception:
-                        pass
+                        on_all = []
+                        kun_all = []
+                        for g in rm_groups:
+                            for r in getattr(g, 'on_readings', []) or []:
+                                on_all.append(str(r))
+                            for r in getattr(g, 'kun_readings', []) or []:
+                                kun_all.append(str(r))
+                        on_content = " • ".join(on_all)
+                        kun_content = " • ".join(kun_all)
+                    if on_content:
+                        canvas.create_text(pad_x + 6, ly, text="On:", font=("Segoe UI", 10, "bold"), fill="#8e8e93", anchor="nw")
+                        ly += jp_h + 1
+                        canvas.create_text(pad_x + 6, ly, text=on_content, font=jp_font, fill="#1c1c1e", anchor="nw", width=wrap_w_inner)
+                        ly += _nlines(jf, on_content, wrap_w_inner) * jp_h + 4
+                    if kun_content:
+                        canvas.create_text(pad_x + 6, ly, text="Kun:", font=("Segoe UI", 10, "bold"), fill="#8e8e93", anchor="nw")
+                        ly += jp_h + 1
+                        canvas.create_text(pad_x + 6, ly, text=kun_content, font=jp_font, fill="#1c1c1e", anchor="nw", width=wrap_w_inner)
+                        ly += _nlines(jf, kun_content, wrap_w_inner) * jp_h + 4
+                except Exception:
+                    pass
+
+            if not _rendered_any:
+                self._withdraw_dict_card()
+                return
 
         canvas.update_idletasks()
         bbox = canvas.bbox("all")
         dict_h = (bbox[3] if bbox else ly) + 8
+        if single_char:
+            card_w = min(card_w, max(pad_x + 6 + wrap_w_inner + 4, 180))
 
         try:
             v_left = user32.GetSystemMetrics(76)
