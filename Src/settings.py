@@ -132,17 +132,18 @@ class SettingsManager:
         tk.Checkbutton(win, text="Show translation", variable=self._show_translation_var,
                        command=on_toggle).pack(anchor="w", **pad)
 
-        tk.Label(win, text="Translator", font=("Segoe UI", 9, "bold"),
+        tk.Label(win, text="Translation & Dictionary", font=("Segoe UI", 9, "bold"),
                  anchor="w").pack(fill="x", padx=12, pady=(10, 2))
         sep_t = tk.Frame(win, height=1, bg="#c0c0c0")
         sep_t.pack(fill="x", padx=12)
 
-        self._translator_var = tk.StringVar(value=a.translator)
+        self._translator_var = tk.StringVar(value="DeepL" if a.translator == "deepl" else "Google")
 
         def on_translator_change(*_):
             val = self._translator_var.get()
-            if val != a.translator:
-                a._switch_translator(val)
+            internal_val = "deepl" if val == "DeepL" else "google"
+            if internal_val != a.translator:
+                a._switch_translator(internal_val)
                 self.save()
 
         self._translator_var.trace_add("write", on_translator_change)
@@ -150,23 +151,24 @@ class SettingsManager:
         f_trans = tk.Frame(win)
         f_trans.pack(fill="x", padx=12, pady=3)
         tk.Label(f_trans, text="Service:", anchor="w", width=20).pack(side="left")
-        tk.OptionMenu(f_trans, self._translator_var, "deepl", "google").pack(side="left")
+        tk.OptionMenu(f_trans, self._translator_var, "DeepL", "Google").pack(side="left")
 
         f_dict = tk.Frame(win)
         f_dict.pack(fill="x", padx=12, pady=3)
         tk.Label(f_dict, text="Dictionary:", anchor="w", width=20).pack(side="left")
 
-        self._dict_type_var = tk.StringVar(value=a.dictionary_type)
+        self._dict_type_var = tk.StringVar(value="JA-EN" if a.dictionary_type == "English" else "JA-JA")
         def on_dict_type_change(*_):
             val = self._dict_type_var.get()
-            if val != a.dictionary_type:
-                a.dictionary_type = val
+            internal_val = "English" if val == "JA-EN" else "Monolingual"
+            if internal_val != a.dictionary_type:
+                a.dictionary_type = internal_val
                 self.save()
                 if not a._check_dict_files():
-                    self._dict_type_var.set(a.dictionary_type)
+                    self._dict_type_var.set("JA-EN" if a.dictionary_type == "English" else "JA-JA")
                 a._retranslate_boxes()
         self._dict_type_var.trace_add("write", on_dict_type_change)
-        tk.OptionMenu(f_dict, self._dict_type_var, "English", "Monolingual").pack(side="left")
+        tk.OptionMenu(f_dict, self._dict_type_var, "JA-EN", "JA-JA").pack(side="left")
  
         tk.Label(win, text="OCR Filter", font=("Segoe UI", 9, "bold"),
                 anchor="w").pack(fill="x", padx=12, pady=(10, 2))
@@ -231,9 +233,39 @@ class SettingsManager:
                        command=on_toggle).pack(anchor="w", **pad)
 
         tk.Label(win, text="", font=("Segoe UI", 3)).pack()
-        tk.Button(win, text="Purge translation caches",
-                  command=a._purge_caches,
-                  font=("Segoe UI", 8)).pack(anchor="w", padx=12, pady=3)
+        
+        def get_total_entries():
+            count = 0
+            for service in ["deepl", "google"]:
+                path = os.path.join(_PROJECT_DIR, "Data", f"translation_cache_{service}.json")
+                if os.path.exists(path):
+                    try:
+                        with open(path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                            count += len(data)
+                    except Exception:
+                        pass
+            return count
+
+        def on_purge():
+            a._purge_caches()
+            lbl_entries.config(text=f"Entries: {get_total_entries()}")
+
+        f_purge = tk.Frame(win)
+        f_purge.pack(fill="x", padx=12, pady=3)
+        tk.Button(f_purge, text="Purge translation caches",
+                  command=on_purge,
+                  font=("Segoe UI", 8)).pack(side="left")
+        
+        lbl_entries = tk.Label(f_purge, text=f"Entries: {get_total_entries()}", 
+                               font=("Segoe UI", 8), fg="gray")
+        lbl_entries.pack(side="left", padx=10)
+
+        def refresh_count():
+            if win.winfo_exists():
+                lbl_entries.config(text=f"Entries: {get_total_entries()}")
+                win.after(5000, refresh_count)
+        win.after(5000, refresh_count)
 
         win.update_idletasks()
         win.geometry(f"{win.winfo_reqwidth()}x{win.winfo_reqheight()}")
