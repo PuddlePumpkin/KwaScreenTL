@@ -10,10 +10,7 @@ from hotkeys import (
     _hk_display, _vk_to_display,
     user32,
 )
-
-
-_PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-os.makedirs(os.path.join(_PROJECT_DIR, "Data"), exist_ok=True)
+from utils import _PROJECT_DIR
 
 class SettingsManager:
     def __init__(self, app):

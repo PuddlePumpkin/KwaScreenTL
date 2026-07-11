@@ -3,6 +3,8 @@ import json
 import time
 import tkinter as tk
 import tkinter.messagebox as tkmb
+import tkinter.font as tkfont
+import tkinter.simpledialog as tksd
 import queue
 import threading
 import socket
@@ -13,7 +15,28 @@ import sys
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from PIL import Image, ImageTk
-import tkinter.font as tkfont
+from functools import lru_cache
+import webbrowser
+import urllib.parse
+import mss
+import jaconv
+import pykakasi
+from jamdict import Jamdict
+from sudachipy import Dictionary, SplitMode
+from deep_translator import GoogleTranslator
+
+from hotkeys import register_hotkey_win32, _hk_display, _vk_to_display, MOD_CONTROL, MOD_ALT, MOD_SHIFT, MOD_NOREPEAT
+from settings import SettingsManager
+from utils import (
+    _PROJECT_DIR, SANKOKU_DB, KANKI_DB,
+    contains_japanese, _is_kanji, _is_kana,
+    find_word_at_point, get_chunk_at_offset, get_chunk_field, get_combined_chunk_forms,
+    get_single_char_at_offset,
+    load_api_keys as _load_api_keys, save_api_keys as _save_api_keys,
+    make_translucent, user32,
+    WS_EX_LAYERED, WS_EX_TRANSPARENT, WS_EX_NOACTIVATE, GWL_EXSTYLE,
+    LWA_COLORKEY, LWA_ALPHA, RGN_OR, SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE,
+)
 
 def _nlines(font_obj, text, wrap_width):
     if not text:
@@ -27,7 +50,7 @@ def _get_monolingual_meanings(text):
     Returns: [{'kanji': str, 'kana': str, 'gloss': str, 'pos': [str],
                'antonyms': [str], 'xrefs': [str], 'etym': str}] or None
     """
-    db_path = os.path.join(_PROJECT_DIR, "KwaScreenTLMonolingual", "sankokudict.db")
+    db_path = SANKOKU_DB
     if not os.path.exists(db_path):
         return None
     try:
@@ -108,7 +131,7 @@ def _get_monolingual_meanings(text):
 
 def _get_kanji_info(char):
     """Query Kanki table in kankidict.db for a single character."""
-    db_path = os.path.join(_PROJECT_DIR, "KwaScreenTLMonolingual", "kankidict.db")
+    db_path = KANKI_DB
     if not os.path.exists(db_path):
         return None
     try:
@@ -132,15 +155,8 @@ os.environ["FLAGS_enable_pir_with_executor_in_serial_mode"] = "0"
 # ── Redirect all library stderr to a log file ─────────────────────────────────
 import warnings
 warnings.filterwarnings("ignore", message="No ccache found")
-import sys
 import msvcrt
-from hotkeys import register_hotkey_win32, _hk_display, _vk_to_display, MOD_CONTROL, MOD_ALT, MOD_SHIFT, MOD_NOREPEAT
-from settings import SettingsManager
-_PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_SANKOKU_DB = os.path.join(_PROJECT_DIR, "KwaScreenTLMonolingual", "sankokudict.db")
-_KANKI_DB = os.path.join(_PROJECT_DIR, "KwaScreenTLMonolingual", "kankidict.db")
 _APP_READY_FLAG = os.path.join(_PROJECT_DIR, "_app_ready.flag")
-os.makedirs(os.path.join(_PROJECT_DIR, "Data"), exist_ok=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 STD_ERROR_HANDLE = -12
 _log_path = os.path.join(_PROJECT_DIR, "app.log")
@@ -266,35 +282,6 @@ BORDER_WIDTH = 5
 CARD_BG = "#f2f2f7"
 
 
-
-import tkinter as tk
-import tkinter.font as tkfont
-import tkinter.simpledialog as tksd
-from PIL import Image, ImageTk
-import mss
-import jaconv
-import pykakasi
-from jamdict import Jamdict
-from sudachipy import Dictionary, SplitMode
-from deep_translator import GoogleTranslator
-from concurrent.futures import ThreadPoolExecutor
-from functools import lru_cache
-import webbrowser
-import urllib.parse
-
-# ── API keys (JSON) ─────────────────────────────────────────────────────────
-_API_KEYS_FILE = os.path.join(_PROJECT_DIR, "Data", "apikeys.json")
-
-def _load_api_keys():
-    try:
-        with open(_API_KEYS_FILE, "r") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-def _save_api_keys(keys):
-    with open(_API_KEYS_FILE, "w") as f:
-        json.dump(keys, f, indent=2)
 
 _deepl_api_key = None
 
@@ -423,18 +410,6 @@ def translate_deepl_batch(texts):
     resp.raise_for_status()
     return [t["text"] for t in resp.json()["translations"]]
 
-# Win32 constants for click-through overlay
-WS_EX_LAYERED = 0x80000
-WS_EX_TRANSPARENT = 0x20
-WS_EX_NOACTIVATE = 0x08000000
-GWL_EXSTYLE = -20
-LWA_COLORKEY = 0x1
-LWA_ALPHA = 0x2
-RGN_OR = 2
-SWP_NOSIZE = 0x0001
-SWP_NOMOVE = 0x0002
-SWP_NOACTIVATE = 0x0010
-
 # Win32 structures for mouse cursor position
 class POINT(ctypes.Structure):
     _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
@@ -500,23 +475,6 @@ def _get_english_meanings(literal):
         return []
 
 
-
-def contains_japanese(text):
-    """Check if the text contains any Japanese characters (Hiragana, Katakana, Kanji)."""
-    # Unicode ranges:
-    # Hiragana: \u3040-\u309f
-    # Katakana: \u30a0-\u30ff
-    # Kanji (CJK Unified Ideographs): \u4e00-\u9faf
-    pattern = re.compile(r'[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9faf]')
-    return bool(pattern.search(text))
-
-def _is_kanji(ch):
-    """Check if a character is a CJK ideograph."""
-    return '\u4e00' <= ch <= '\u9faf'
-
-def _is_kana(ch):
-    """Check if a character is Hiragana or Katakana."""
-    return '\u3040' <= ch <= '\u30ff'
 
 def _generate_fuzzy_candidates(word):
     """Generate plausible spelling variations for fuzzy fallback lookup."""
@@ -1350,8 +1308,8 @@ class KwaScreenApp:
             self._ensure_deepl_key()
 
     def _check_dict_files(self):
-        has_sankoku = os.path.exists(_SANKOKU_DB)
-        has_kanki = os.path.exists(_KANKI_DB)
+        has_sankoku = os.path.exists(SANKOKU_DB)
+        has_kanki = os.path.exists(KANKI_DB)
         if has_sankoku and has_kanki:
             return True
         msg = None
@@ -2002,12 +1960,7 @@ class KwaScreenApp:
             return
         ox = bbox['x'] - BOX_PAD + event.x
         oy = bbox['y'] - BOX_PAD + event.y
-        wi = -1
-        for i, w in enumerate(words):
-            if w['x'] <= ox <= w['x'] + w['width'] and \
-               w['y'] <= oy <= w['y'] + w['height']:
-                wi = i
-                break
+        wi, char_off = find_word_at_point(words, ox, oy)
         if wi < 0:
             return
         self._selection_box_idx = idx
@@ -2015,7 +1968,7 @@ class KwaScreenApp:
         self._selection_end = wi
         self.is_dragging = True
         self._click_time = time.time()
-        self._click_char_off = sum(len(words[j]['text']) for j in range(wi))
+        self._click_char_off = char_off
 
     def _box_drag(self, event, idx):
         """Drag on a box → extend word selection with visual highlight."""
@@ -2030,12 +1983,7 @@ class KwaScreenApp:
             return
         ox = bbox['x'] - BOX_PAD + event.x
         oy = bbox['y'] - BOX_PAD + event.y
-        wi = -1
-        for i, w in enumerate(words):
-            if w['x'] <= ox <= w['x'] + w['width'] and \
-               w['y'] <= oy <= w['y'] + w['height']:
-                wi = i
-                break
+        wi, _ = find_word_at_point(words, ox, oy)
         if wi < 0:
             self._withdraw_dict_card()
             return
@@ -2097,110 +2045,57 @@ class KwaScreenApp:
         """Return the orig text of the hovered kakasi chunk, or None."""
         if self._card_hover_char_idx < 0 or not self._card_data:
             return None
-        ki = self._card_data.get('kakasi_items', [])
-        coff = 0
-        for item in ki:
-            orig = item.get('orig', '')
-            if coff <= self._card_hover_char_idx < coff + len(orig):
-                return orig.strip()
-            coff += len(orig)
-        return None
+        item = get_chunk_at_offset(self._card_data.get('kakasi_items', []), self._card_hover_char_idx)[0]
+        return item.get('orig', '').strip() if item else None
 
     def _get_hovered_chunk_dict_form(self):
         """Return the dictionary form of the hovered kakasi chunk, or orig text if none, or None."""
         if self._card_hover_char_idx < 0 or not self._card_data:
             return None
-        ki = self._card_data.get('kakasi_items', [])
-        coff = 0
-        for item in ki:
-            orig = item.get('orig', '')
-            if coff <= self._card_hover_char_idx < coff + len(orig):
-                return item.get('dict_form', orig).strip()
-            coff += len(orig)
-        return None
+        item = get_chunk_at_offset(self._card_data.get('kakasi_items', []), self._card_hover_char_idx)[0]
+        if not item:
+            return None
+        return item.get('dict_form', item.get('orig', '')).strip()
 
     def _get_hovered_chunk_pos(self):
         """Return the POS of the hovered kakasi chunk, or empty string."""
-        if self._card_hover_char_idx < 0 or not self._card_data:
-            return ''
-        ki = self._card_data.get('kakasi_items', [])
-        coff = 0
-        for item in ki:
-            orig = item.get('orig', '')
-            if coff <= self._card_hover_char_idx < coff + len(orig):
-                return item.get('pos', '')
-            coff += len(orig)
-        return ''
+        return get_chunk_field(self._card_data.get('kakasi_items', []) if self._card_data else [],
+                               self._card_hover_char_idx, 'pos')
 
     def _get_hovered_chunk_conj(self):
         """Return the conjugation label of the hovered kakasi chunk, or empty string."""
-        if self._card_hover_char_idx < 0 or not self._card_data:
-            return ''
-        ki = self._card_data.get('kakasi_items', [])
-        coff = 0
-        for item in ki:
-            orig = item.get('orig', '')
-            if coff <= self._card_hover_char_idx < coff + len(orig):
-                return item.get('conj', '')
-            coff += len(orig)
-        return ''
+        return get_chunk_field(self._card_data.get('kakasi_items', []) if self._card_data else [],
+                               self._card_hover_char_idx, 'conj')
 
     def _get_hovered_chunk_hira(self):
         """Return Sudachi's contextual hiragana reading for the hovered chunk, or empty string."""
-        if self._card_hover_char_idx < 0 or not self._card_data:
-            return ''
-        ki = self._card_data.get('kakasi_items', [])
-        coff = 0
-        for item in ki:
-            orig = item.get('orig', '')
-            if coff <= self._card_hover_char_idx < coff + len(orig):
-                return item.get('hira', '')
-            coff += len(orig)
-        return ''
+        return get_chunk_field(self._card_data.get('kakasi_items', []) if self._card_data else [],
+                               self._card_hover_char_idx, 'hira')
 
     def _get_combined_chunk_forms(self):
         """Return concat of adjacent chunks' original text (prev+current, current+next, prev+current+next).
         Useful for words Sudachi over-splits (e.g. ござい+ます → ございます)."""
         if self._card_hover_char_idx < 0 or not self._card_data:
             return []
-        ki = self._card_data.get('kakasi_items', [])
-        coff = 0
-        idx = -1
-        for i, item in enumerate(ki):
-            orig = item.get('orig', '')
-            if coff <= self._card_hover_char_idx < coff + len(orig):
-                idx = i
-                break
-            coff += len(orig)
-        if idx < 0:
-            return []
-        forms = set()
-        # current + next
-        if idx + 1 < len(ki):
-            forms.add(ki[idx].get('orig', '') + ki[idx + 1].get('orig', ''))
-        # prev + current
-        if idx > 0:
-            forms.add(ki[idx - 1].get('orig', '') + ki[idx].get('orig', ''))
-        # prev + current + next
-        if idx > 0 and idx + 1 < len(ki):
-            forms.add(ki[idx - 1].get('orig', '') + ki[idx].get('orig', '') + ki[idx + 1].get('orig', ''))
-        return [f for f in forms if contains_japanese(f)]
+        return get_combined_chunk_forms(self._card_data.get('kakasi_items', []), self._card_hover_char_idx)
 
     def _get_hovered_single_char(self):
         """Return the single character at the hovered position, or None."""
         if self._card_hover_char_idx < 0 or not self._card_data:
             return None
-        ki = self._card_data.get('kakasi_items', [])
-        coff = 0
-        for item in ki:
-            orig = item.get('orig', '')
-            if coff <= self._card_hover_char_idx < coff + len(orig):
-                offset = self._card_hover_char_idx - coff
-                if 0 <= offset < len(orig):
-                    return orig[offset]
-                return None
-            coff += len(orig)
-        return None
+        return get_single_char_at_offset(self._card_data.get('kakasi_items', []), self._card_hover_char_idx)
+
+    def _ensure_dict_window(self):
+        if hasattr(self, '_dict_window') and self._dict_window:
+            return
+        self._dict_window = tk.Toplevel(self.root)
+        self._dict_window.overrideredirect(True)
+        self._dict_window.attributes("-topmost", True)
+        self._dict_canvas = tk.Canvas(self._dict_window, borderwidth=0, highlightthickness=0, bg=CARD_BG)
+        self._dict_canvas.pack(fill="both", expand=True)
+        self._dict_window.bind("<Escape>", lambda e: self.release_capture())
+        self._dict_window.update_idletasks()
+        make_translucent(self._dict_window.winfo_id(), 0xFA)
 
     def _update_dict_card(self, single_char=False):
         """Start async dictionary lookup for the hovered word."""
@@ -2519,21 +2414,7 @@ class KwaScreenApp:
             self._withdraw_dict_card()
             return
 
-        if not hasattr(self, '_dict_window') or not self._dict_window:
-            self._dict_window = tk.Toplevel(self.root)
-            self._dict_window.overrideredirect(True)
-            self._dict_window.attributes("-topmost", True)
-            self._dict_canvas = tk.Canvas(self._dict_window, borderwidth=0, highlightthickness=0, bg=CARD_BG)
-            self._dict_canvas.pack(fill="both", expand=True)
-            self._dict_window.bind("<Escape>", lambda e: self.release_capture())
-            try:
-                self._dict_window.update_idletasks()
-                hwnd = user32.GetAncestor(self._dict_window.winfo_id(), 2)
-                ex = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-                user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED)
-                user32.SetLayeredWindowAttributes(hwnd, 0, 0xFA, LWA_ALPHA)
-            except Exception:
-                pass
+        self._ensure_dict_window()
 
         canvas = self._dict_canvas
         canvas.delete("all")
@@ -2914,20 +2795,7 @@ class KwaScreenApp:
 
         card_w = max(box.get('w', 200), 200, 340)
 
-        if not hasattr(self, '_dict_window') or not self._dict_window:
-            self._dict_window = tk.Toplevel(self.root)
-            self._dict_window.overrideredirect(True)
-            self._dict_window.attributes("-topmost", True)
-            self._dict_canvas = tk.Canvas(self._dict_window, borderwidth=0, highlightthickness=0, bg=CARD_BG)
-            self._dict_canvas.pack(fill="both", expand=True)
-            try:
-                self._dict_window.update_idletasks()
-                hwnd = user32.GetAncestor(self._dict_window.winfo_id(), 2)
-                ex = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-                user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED)
-                user32.SetLayeredWindowAttributes(hwnd, 0, 0xFA, LWA_ALPHA)
-            except Exception:
-                pass
+        self._ensure_dict_window()
 
         canvas = self._dict_canvas
         canvas.delete("all")
@@ -3002,15 +2870,9 @@ class KwaScreenApp:
             return
         ox = bbox['x'] - BOX_PAD + event.x
         oy = bbox['y'] - BOX_PAD + event.y
-        wi = -1
-        for i, w in enumerate(words):
-            if w['x'] <= ox <= w['x'] + w['width'] and \
-               w['y'] <= oy <= w['y'] + w['height']:
-                wi = i
-                break
+        wi, char_off = find_word_at_point(words, ox, oy)
         if wi < 0:
             return
-        char_off = sum(len(words[j]['text']) for j in range(wi))
         self._card_hover_char_idx = char_off
         self._card_data = box['data']
         self._card_data_idx = idx
@@ -3307,17 +3169,9 @@ class KwaScreenApp:
             return
         ox = bbox['x'] - BOX_PAD + event.x
         oy = bbox['y'] - BOX_PAD + event.y
-        wi = -1
-        for i, w in enumerate(words):
-            if w['x'] <= ox <= w['x'] + w['width'] and \
-               w['y'] <= oy <= w['y'] + w['height']:
-                wi = i
-                break
+        wi, char_off = find_word_at_point(words, ox, oy)
         if wi < 0:
             return
-
-        # Convert word index → character offset for kakasi_items mapping
-        char_off = sum(len(words[j]['text']) for j in range(wi))
 
         self._redraw_box_highlight(idx, char_off)
 
@@ -3510,8 +3364,6 @@ class KwaScreenApp:
     def run(self):
         self.check_focus()
         self.root.mainloop()
-
-user32 = ctypes.windll.user32
 
 def main():
     print("Application started")
