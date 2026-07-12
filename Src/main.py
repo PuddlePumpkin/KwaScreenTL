@@ -3152,9 +3152,13 @@ class KwaScreenApp:
             canvas.create_text(pad_x, eng_y, text=data['english'],
                                font=("Segoe UI", self.font_size_en, "bold"),
                                fill="#1c1c1e", anchor="nw", width=card_w - 16, tags="eng_text")
-            est_chars = max(1, (card_w - 16) // 7)
-            en_lines = max(1, -(-len(data.get('english', '')) // est_chars))
-            card_h = eng_y + en_lines * en_font.metrics("linespace") + 6
+            # Force full layout so bbox returns accurate wrapped dimensions
+            canvas.update()
+            eng_bbox = canvas.bbox("eng_text")
+            if eng_bbox:
+                card_h = eng_bbox[3] + 6  # bottom-y + padding
+            else:
+                card_h = eng_y + en_font.metrics("linespace") + 6
         else:
             card_h = ly
         canvas.configure(height=card_h)
