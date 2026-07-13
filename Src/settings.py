@@ -33,6 +33,62 @@ class SettingsManager:
         self.hk_suppress_until = 0.0
         self.hk_btns = {}
         self._file = os.path.join(_PROJECT_DIR, "Data", "settings.json")
+        self._build_window()
+
+    # ── Preloaded window ─────────────────────────────────────────────────
+
+    def _build_window(self):
+        a = self.app
+        win = ctk.CTkToplevel(a.root)
+        win.withdraw()
+        win.title("Settings")
+        win.resizable(False, False)
+        win.attributes("-topmost", True)
+        win.configure(fg_color=_BG)
+        icon_path = os.path.join(_PROJECT_DIR, "Launcher", "AppIcon.ico")
+        if os.path.exists(icon_path):
+            try:
+                win.iconbitmap(icon_path)
+            except Exception:
+                pass
+        self.window = win
+        self._setup_ui(win)
+        win.protocol("WM_DELETE_WINDOW", lambda: (
+            self._cancel_recording(), win.withdraw()
+        ))
+
+    def _sync_from_app(self):
+        a = self.app
+        self._show_ocr_var.set(a.show_ocr_text)
+        self._show_furigana_var.set(a.show_furigana)
+        self._show_romaji_var.set(a.show_romaji)
+        self._show_translation_var.set(a.show_translation)
+        self._skip_nj_var.set(a.skip_non_japanese)
+        self._show_crop_var.set(a.show_crop)
+        self._translator_menu.set(
+            "DeepL" if a.translator == "deepl" else "Google" if a.translator == "google" else "None")
+        self._dict_type_menu.set("JA-EN" if a.dictionary_type == "English" else "JA-JA")
+        opts = {"25%": 25, "50%": 50, "75%": 75, "100%": 100}
+        rev = {v: k for k, v in opts.items()}
+        self._scale_menu.set(rev[a.region_detect_scale])
+        self._entries_slider.set(self._val_to_slider(a.max_dict_entries))
+        self._entries_lbl.configure(text=self._slider_disp(self._val_to_slider(a.max_dict_entries)))
+        self._senses_slider.set(self._val_to_slider(a.max_dict_senses))
+        self._senses_lbl.configure(text=self._slider_disp(self._val_to_slider(a.max_dict_senses)))
+        for action in ("capture", "snip", "settings"):
+            btn = self.hk_btns.get(action)
+            if btn and btn.winfo_exists():
+                btn.configure(text=getattr(a, f"hk_{action}")["display"])
+        self._entries_lbl_dbg.configure(text=f"Entries: {self._count_cache_entries()}")
+
+    def _start_refresh_timer(self):
+        def refresh_count():
+            if not self.window or not self.window.winfo_exists():
+                return
+            if self.window.winfo_viewable():
+                self._entries_lbl_dbg.configure(text=f"Entries: {self._count_cache_entries()}")
+                self.window.after(5000, refresh_count)
+        self.window.after(5000, refresh_count)
 
     # ── Persistence ──────────────────────────────────────────────────────
 
@@ -88,29 +144,17 @@ class SettingsManager:
     # ── Toggle window ────────────────────────────────────────────────────
 
     def toggle(self):
-        if self.window and self.window.winfo_exists():
+        if not self.window or not self.window.winfo_exists():
+            self._build_window()
+        if self.window.winfo_viewable():
             self._cancel_recording()
-            self.hk_btns.clear()
-            self.window.destroy()
-            self.window = None
-            return
-
-        a = self.app
-        win = ctk.CTkToplevel(a.root)
-        win.withdraw()
-        win.title("Settings")
-        win.resizable(False, False)
-        win.attributes("-topmost", True)
-        win.configure(fg_color=_BG)
-        icon_path = os.path.join(_PROJECT_DIR, "Launcher", "AppIcon.ico")
-        if os.path.exists(icon_path):
-            try:
-                win.iconbitmap(icon_path)
-            except Exception:
-                pass
-        self.window = win
-        self._setup_ui(win)
-        win.deiconify()
+            self.window.withdraw()
+        else:
+            self._sync_from_app()
+            self._start_refresh_timer()
+            self.window.deiconify()
+            self.window.lift()
+            self.window.focus_force()
 
     # ── UI helpers ───────────────────────────────────────────────────────
 
@@ -303,18 +347,8 @@ class SettingsManager:
                                              font=("Segoe UI", 11), text_color=_TEXT2)
         self._entries_lbl_dbg.pack(side="left", padx=12)
 
-        def refresh_count():
-            if win.winfo_exists():
-                self._entries_lbl_dbg.configure(text=f"Entries: {self._count_cache_entries()}")
-                win.after(5000, refresh_count)
-        win.after(5000, refresh_count)
-
         win.update_idletasks()
         win.geometry(f"{win.winfo_reqwidth()}x{win.winfo_reqheight()}")
-        win.protocol("WM_DELETE_WINDOW", lambda: (
-            self._cancel_recording(), self.hk_btns.clear(),
-            setattr(self, 'window', None), win.destroy()
-        ))
 
     # ── UI callbacks ─────────────────────────────────────────────────────
 
