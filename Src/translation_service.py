@@ -180,8 +180,14 @@ def cache_size():
     return len(_translation_cache)
 
 def is_error(result):
-    """Return True if a translation result is an error string."""
-    return isinstance(result, str) and result.startswith("[")
+    """Return True if a translation result is an actual error string."""
+    if not isinstance(result, str) or not result.startswith("["):
+        return False
+    known_errors = (
+        "[Network Error:",
+        "[DeepL:",
+    )
+    return result.startswith(known_errors)
 
 def cache_store(text, translation):
     """Store a successful translation in the cache. Silently ignores errors."""
