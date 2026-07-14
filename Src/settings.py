@@ -62,7 +62,6 @@ class SettingsManager:
         self._show_ocr_var.set(a.show_ocr_text)
         self._show_furigana_var.set(a.show_furigana)
         self._show_romaji_var.set(a.show_romaji)
-        self._show_translation_var.set(a.show_translation)
         self._skip_nj_var.set(a.skip_non_japanese)
         self._show_crop_var.set(a.show_crop)
         self._translator_menu.set(
@@ -102,7 +101,6 @@ class SettingsManager:
             a.show_furigana = data.get("show_furigana", True)
             a.show_romaji = data.get("show_romaji", True)
             a.skip_non_japanese = data.get("skip_non_japanese", a.skip_non_japanese)
-            a.show_translation = data.get("show_translation", True)
             a.translator = data.get("translator", a.translator)
             a.dictionary_type = data.get("dictionary_type", "English")
             a.region_detect_scale = data.get("region_detect_scale", 100)
@@ -115,6 +113,7 @@ class SettingsManager:
                 a.hk_snip = hk["snip"]
             if "settings" in hk:
                 a.hk_settings = hk["settings"]
+            a.show_translation = a.translator != "none"
         except (FileNotFoundError, json.JSONDecodeError):
             pass
 
@@ -126,7 +125,6 @@ class SettingsManager:
             "show_furigana": a.show_furigana,
             "show_romaji": a.show_romaji,
             "skip_non_japanese": a.skip_non_japanese,
-            "show_translation": a.show_translation,
             "translator": a.translator,
             "dictionary_type": a.dictionary_type,
             "region_detect_scale": a.region_detect_scale,
@@ -232,7 +230,6 @@ class SettingsManager:
         a = self.app
 
         def on_toggle(*_):
-            old_translation = a.show_translation
             a.show_crop = self._show_crop_var.get()
             a.show_ocr_text = self._show_ocr_var.get()
             if not a.show_ocr_text:
@@ -240,22 +237,8 @@ class SettingsManager:
             a.show_furigana = self._show_furigana_var.get()
             a.show_romaji = self._show_romaji_var.get()
             a.skip_non_japanese = self._skip_nj_var.get()
-            new_show_trans = self._show_translation_var.get()
-            if new_show_trans and a.translator == "none":
-                a.translator = "google"
-                self._translator_menu.set("Google")
-                a._switch_translator("google")
-            a.show_translation = new_show_trans
             self.save()
-            if old_translation != a.show_translation:
-                if a.show_translation:
-                    a._retranslate_boxes()
-                else:
-                    for box in a.ocr_boxes:
-                        box['data']['english'] = ""
-                    a._refresh_hover_card()
-            else:
-                a._refresh_hover_card()
+            a._refresh_hover_card()
 
         # ── Hover Card ───────────────────────────────────────────────
         card = self._card(win)
@@ -263,7 +246,6 @@ class SettingsManager:
         self._show_ocr_var = self._chk(self._row(card), "Show OCR text", a.show_ocr_text, on_toggle)
         self._show_furigana_var = self._chk(self._row(card), "Show furigana", a.show_furigana, on_toggle)
         self._show_romaji_var = self._chk(self._row(card), "Show romaji", a.show_romaji, on_toggle)
-        self._show_translation_var = self._chk(self._row(card), "Show translation", a.show_translation, on_toggle)
 
         # ── Translation & Dictionary ──────────────────────────────────
         card = self._card(win)
@@ -356,12 +338,17 @@ class SettingsManager:
         a = self.app
         internal = "deepl" if val == "DeepL" else "google" if val == "Google" else "none"
         if internal != a.translator:
+            old_translation = a.show_translation
+            a.show_translation = internal != "none"
             a._switch_translator(internal)
             self.save()
-            if internal == "none":
-                self._show_translation_var.set(False)
-                a.show_translation = False
-                a._refresh_hover_card()
+            if old_translation != a.show_translation:
+                if a.show_translation:
+                    a._retranslate_boxes()
+                else:
+                    for box in a.ocr_boxes:
+                        box['data']['english'] = ""
+                    a._refresh_hover_card()
 
     def _on_dict_type(self, val):
         a = self.app

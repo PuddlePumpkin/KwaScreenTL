@@ -986,7 +986,7 @@ class KwaScreenApp:
         self.show_crop = True
         self.show_romaji = True
         self.skip_non_japanese = SKIP_NON_JAPANESE
-        self.show_translation = True
+        self.show_translation = TRANSLATOR != "none"
         self.translator = TRANSLATOR
         self.dictionary_type = "English"
         self.region_detect_scale = 100
