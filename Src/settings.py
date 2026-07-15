@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import tkinter as tk
 import customtkinter as ctk
 
 from hotkeys import (
@@ -22,6 +23,81 @@ _ACCENT_HOVER = "#3A546D"
 _TEXT = "#1F2937"
 _TEXT2 = "#9CA3AF"
 
+
+class Tooltip:
+    def __init__(self, widget, text, delay=0.5):
+        self.widget = widget
+        self.text = text
+        self.delay = delay
+        self._status = "outside"
+        self._last_moved = 0.0
+        self._tip = None
+        self._after_id = None
+
+        self.widget.bind("<Enter>", self._on_enter, add="+")
+        self.widget.bind("<Leave>", self._on_leave, add="+")
+        self.widget.bind("<Motion>", self._on_enter, add="+")
+        self.widget.bind("<B1-Motion>", self._on_enter, add="+")
+
+    def _ensure_tip(self):
+        if self._tip is not None:
+            return
+        parent = self.widget.winfo_toplevel()
+        self._tip = tk.Toplevel(parent)
+        self._tip.withdraw()
+        self._tip.overrideredirect(True)
+        self._tip.wm_attributes("-topmost", True)
+        lbl = tk.Label(self._tip, text=self.text, justify="left",
+                       bg="white", fg=_TEXT, relief="solid", borderwidth=1,
+                       font=("Segoe UI", 10), padx=8, pady=4, wraplength=300)
+        lbl.pack()
+
+    def _on_enter(self, event):
+        if self._status == "visible":
+            return
+        self._last_moved = time.time()
+        if self._status == "outside":
+            self._status = "inside"
+        self._ensure_tip()
+
+        screen_w = self.widget.winfo_screenwidth()
+        self._tip.update_idletasks()
+        tip_w = self._tip.winfo_reqwidth()
+        x = event.x_root + 12
+        if x + tip_w > screen_w:
+            x = event.x_root - tip_w - 12
+        self._tip.geometry(f"+{x}+{event.y_root + 16}")
+
+        if self._after_id:
+            self.widget.after_cancel(self._after_id)
+        self._after_id = self.widget.after(int(self.delay * 1000), self._show)
+
+    def _on_leave(self, event=None):
+        self._status = "outside"
+        if self._after_id:
+            self.widget.after_cancel(self._after_id)
+            self._after_id = None
+        if self._tip:
+            self._tip.withdraw()
+
+    def _show(self):
+        self._after_id = None
+        if self._status == "inside" and time.time() - self._last_moved >= self.delay:
+            self._status = "visible"
+            if self._tip:
+                self._tip.deiconify()
+                self._tip.lift()
+                self._tip.update_idletasks()
+
+    def destroy(self):
+        if self._after_id:
+            self.widget.after_cancel(self._after_id)
+            self._after_id = None
+        if self._tip:
+            self._tip.destroy()
+            self._tip = None
+
+
 class SettingsManager:
     def __init__(self, app):
         self.app = app
@@ -32,6 +108,7 @@ class SettingsManager:
         self.recording_prev = None
         self.hk_suppress_until = 0.0
         self.hk_btns = {}
+        self._tooltips = []
         self._file = os.path.join(_PROJECT_DIR, "Data", "settings.json")
         self._build_window()
 
@@ -54,8 +131,13 @@ class SettingsManager:
         self.window = win
         self._setup_ui(win)
         win.protocol("WM_DELETE_WINDOW", lambda: (
-            self._cancel_recording(), win.withdraw()
+            self._cancel_recording(), self._destroy_tooltips(), win.withdraw()
         ))
+
+    def _destroy_tooltips(self):
+        for tip in self._tooltips:
+            tip.destroy()
+        self._tooltips.clear()
 
     def _sync_from_app(self):
         a = self.app
@@ -184,19 +266,25 @@ class SettingsManager:
         f.pack(fill="x", padx=14, pady=1)
         return f
 
-    def _field(self, parent, text):
-        ctk.CTkLabel(parent, text=text, anchor="w", width=160,
-                     font=("Segoe UI", 12), text_color=_TEXT).pack(side="left", padx=(4, 0))
+    def _field(self, parent, text, tooltip=None):
+        w = ctk.CTkLabel(parent, text=text, anchor="w", width=160,
+                         font=("Segoe UI", 12), text_color=_TEXT)
+        w.pack(side="left", padx=(4, 0))
+        if tooltip:
+            self._tooltips.append(Tooltip(w, tooltip))
 
-    def _chk(self, parent, text, initial, cmd):
+    def _chk(self, parent, text, initial, cmd, tooltip=None):
         var = ctk.BooleanVar(value=initial)
-        ctk.CTkCheckBox(parent, text=text, variable=var, onvalue=True, offvalue=False,
-                        command=cmd, font=("Segoe UI", 11), height=20,
-                        fg_color=_ACCENT, hover_color=_ACCENT_HOVER,
-                        text_color=_TEXT).pack(anchor="w", padx=(4, 0), pady=2)
+        w = ctk.CTkCheckBox(parent, text=text, variable=var, onvalue=True, offvalue=False,
+                            command=cmd, font=("Segoe UI", 11), height=20,
+                            fg_color=_ACCENT, hover_color=_ACCENT_HOVER,
+                            text_color=_TEXT)
+        w.pack(anchor="w", padx=(4, 0), pady=2)
+        if tooltip:
+            self._tooltips.append(Tooltip(w, tooltip))
         return var
 
-    def _menu(self, parent, values, initial, cmd):
+    def _menu(self, parent, values, initial, cmd, tooltip=None):
         m = ctk.CTkOptionMenu(parent, values=values, command=cmd,
                               width=130, font=("Segoe UI", 12),
                               fg_color=_ACCENT, button_color=_ACCENT,
@@ -206,11 +294,13 @@ class SettingsManager:
                               text_color="#FFFFFF")
         m.set(initial)
         m.pack(side="left")
+        if tooltip:
+            self._tooltips.append(Tooltip(m, tooltip))
         return m
 
-    def _slider_row(self, card, label_text, value, callback):
+    def _slider_row(self, card, label_text, value, callback, tooltip=None):
         f = self._row(card)
-        self._field(f, label_text)
+        self._field(f, label_text, tooltip)
         lbl = ctk.CTkLabel(f, text=self._slider_disp(value), font=("Segoe UI", 12, "bold"),
                            width=80, text_color=_ACCENT, anchor="w")
         lbl.pack(side="right")
@@ -278,26 +368,31 @@ class SettingsManager:
         # ── Hover Card ───────────────────────────────────────────────
         card = self._card(win)
         self._section_label(card, "Hover Card")
-        self._show_ocr_var = self._chk(self._row(card), "Show OCR text", a.show_ocr_text, on_toggle)
-        self._show_furigana_var = self._chk(self._row(card), "Show furigana", a.show_furigana, on_toggle)
-        self._show_romaji_var = self._chk(self._row(card), "Show romaji", a.show_romaji, on_toggle)
+        self._show_ocr_var = self._chk(self._row(card), "Show OCR text", a.show_ocr_text, on_toggle,
+                                       "Show the original text recognized by OCR in the hover card")
+        self._show_furigana_var = self._chk(self._row(card), "Show furigana", a.show_furigana, on_toggle,
+                                            "Display furigana (pronunciation guides) underneath kanji in the hover card")
+        self._show_romaji_var = self._chk(self._row(card), "Show romaji", a.show_romaji, on_toggle,
+                                          "Show romaji text in the hover card")
 
         # ── Translation & Dictionary ──────────────────────────────────
         card = self._card(win)
         self._section_label(card, "Translation & Dictionary")
         r = self._row(card)
-        self._field(r, "Service:")
+        self._field(r, "Service:", "Translation service used to translate recognized Japanese text")
         self._translator_menu = self._menu(
             r, ["DeepL", "Google", "None"],
             "DeepL" if a.translator == "deepl" else "Google" if a.translator == "google" else "None",
-            lambda val: self._on_translator(val))
+            lambda val: self._on_translator(val),
+            "Translation service: DeepL (high quality, requires API key), Google (free), or None (disable translation)")
 
         r = self._row(card)
-        self._field(r, "Dictionary:")
+        self._field(r, "Dictionary:", "Dictionary used for word lookups in the hover card")
         self._dict_type_menu = self._menu(
             r, ["JA-EN", "JA-JA"],
             "JA-EN" if a.dictionary_type == "English" else "JA-JA",
-            lambda val: self._on_dict_type(val))
+            lambda val: self._on_dict_type(val),
+            "JA-EN: Japanese to English dictionary, JA-JA: Japanese monolingual dictionary")
 
         def on_entries_slider(v):
             val = self._slider_to_val(float(v))
@@ -312,19 +407,24 @@ class SettingsManager:
             self.save()
 
         self._entries_slider, self._entries_lbl = self._slider_row(
-            card, "Max entries:", self._val_to_slider(a.max_dict_entries), on_entries_slider)
+            card, "Max entries:", self._val_to_slider(a.max_dict_entries), on_entries_slider,
+            "Maximum number of dictionary entries to show in the hover card (1-9, or 10 for no limit)")
         self._senses_slider, self._senses_lbl = self._slider_row(
-            card, "Max senses/entry:", self._val_to_slider(a.max_dict_senses), on_senses_slider)
+            card, "Max senses/entry:", self._val_to_slider(a.max_dict_senses), on_senses_slider,
+            "Maximum number of meanings shown per dictionary entry (1-9, or 10 for no limit)")
 
         # ── OCR Filter ───────────────────────────────────────────────
         card = self._card(win)
         self._section_label(card, "OCR Filter")
         self._skip_nj_var = self._chk(self._row(card), "Skip non-Japanese OCR regions",
-                                       a.skip_non_japanese, on_toggle)
+                                       a.skip_non_japanese, on_toggle,
+                                       "Automatically ignore OCR regions that do not contain Japanese text")
         self._skip_num_var = self._chk(self._row(card), "Skip numeric-only OCR regions",
-                                        a.skip_numeric_only, on_toggle)
+                                        a.skip_numeric_only, on_toggle,
+                                        "Ignore OCR regions that contain only numbers (e.g. coordinates, counters)")
         self._show_in_region_var = self._chk(self._row(card), "Show translation in OCR region",
-                                              a.show_in_region_translation, on_toggle)
+                                              a.show_in_region_translation, on_toggle,
+                                              "Display the translation directly inside the OCR region on screen")
 
         def _on_threshold(v):
             val = self._threshold_slider_to_val(float(v))
@@ -338,7 +438,7 @@ class SettingsManager:
             a._refresh_hover_card()
 
         f = self._row(card)
-        self._field(f, "Auto in-region at ≥")
+        self._field(f, "Auto in-region at ≥", "Automatically show in-region translation when X amount of OCR regions are visible.)")
         self._threshold_lbl = ctk.CTkLabel(f, text=self._threshold_disp(a.in_region_auto_threshold),
                                            font=("Segoe UI", 12, "bold"),
                                            width=50, text_color=_ACCENT, anchor="w")
@@ -356,20 +456,21 @@ class SettingsManager:
         opts = {"25%": 25, "50%": 50, "75%": 75, "100%": 100}
         rev = {v: k for k, v in opts.items()}
         r = self._row(card)
-        self._field(r, "OCR Prepass Scale:")
+        self._field(r, "OCR Prepass Scale:", "Resolution scale applied to the screen capture before OCR. Lower values are faster but may reduce ocr region detection quality (final ocr is always full resolution)")
         self._scale_menu = self._menu(r, list(opts.keys()), rev[a.region_detect_scale],
-                                      lambda val: self._on_scale(val, opts))
+                                      lambda val: self._on_scale(val, opts),
+                                      "Scale the captured image before OCR processing. 100% is full resolution, lower values trade accuracy for speed")
 
         # ── Hotkeys ──────────────────────────────────────────────────
         card = self._card(win)
         self._section_label(card, "Hotkeys")
-        for action, hk, label in [
-            ("capture", a.hk_capture, "Capture window:"),
-            ("snip", a.hk_snip, "Capture region:"),
-            ("settings", a.hk_settings, "Open settings:"),
+        for action, hk, label, tip in [
+            ("capture", a.hk_capture, "Capture window:", "Hotkey to capture the entire active window for OCR processing"),
+            ("snip", a.hk_snip, "Capture region:", "Hotkey to capture a custom region of the screen for OCR processing"),
+            ("settings", a.hk_settings, "Open settings:", "Hotkey to open or close this settings window"),
         ]:
             r = self._row(card)
-            self._field(r, label)
+            self._field(r, label, tip)
             btn = ctk.CTkButton(r, text=hk["display"], width=180, font=("Segoe UI", 12),
                                 fg_color=_ACCENT, hover_color=_ACCENT_HOVER,
                                 text_color="#FFFFFF")
@@ -382,13 +483,16 @@ class SettingsManager:
         # ── Debug ────────────────────────────────────────────────────
         card = self._card(win)
         self._section_label(card, "Debug")
-        self._show_crop_var = self._chk(self._row(card), "Show cropped image", a.show_crop, on_toggle)
+        self._show_crop_var = self._chk(self._row(card), "Show cropped image", a.show_crop, on_toggle,
+                                        "Debug: display the cropped image passed to the OCR engine")
 
         r = self._row(card)
-        ctk.CTkButton(r, text="Purge translation caches", command=lambda: self._on_purge(win),
+        btn = ctk.CTkButton(r, text="Purge translation caches", command=lambda: self._on_purge(win),
                       font=("Segoe UI", 11), width=180, height=30,
                       fg_color="transparent", border_color=_ACCENT, border_width=1,
-                      text_color=_ACCENT, hover_color="#F0F4F8").pack(side="left")
+                      text_color=_ACCENT, hover_color="#F0F4F8")
+        btn.pack(side="left")
+        self._tooltips.append(Tooltip(btn, "Delete all cached translation results to free space and force fresh lookups"))
         self._entries_lbl_dbg = ctk.CTkLabel(r, text=f"Entries: {self._count_cache_entries()}",
                                              font=("Segoe UI", 11), text_color=_TEXT2)
         self._entries_lbl_dbg.pack(side="left", padx=12)
