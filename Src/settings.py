@@ -266,6 +266,10 @@ class SettingsManager:
             a.skip_numeric_only = self._skip_num_var.get()
             old_in_region = a.show_in_region_translation
             a.show_in_region_translation = self._show_in_region_var.get()
+            if a.show_in_region_translation and a.in_region_auto_threshold > 0:
+                a.in_region_auto_threshold = 0
+                self._threshold_slider.set(self._threshold_val_to_slider(0))
+                self._threshold_lbl.configure(text=self._threshold_disp(0))
             self.save()
             a._refresh_hover_card()
             if old_in_region != a.show_in_region_translation:
@@ -326,6 +330,9 @@ class SettingsManager:
             val = self._threshold_slider_to_val(float(v))
             a.in_region_auto_threshold = val
             self._threshold_lbl.configure(text=self._threshold_disp(val))
+            if val > 0:
+                self._show_in_region_var.set(False)
+                a.show_in_region_translation = False
             self.save()
             a._refresh_in_region_translations()
             a._refresh_hover_card()
