@@ -994,6 +994,7 @@ class KwaScreenApp:
         self.max_dict_senses = 4
         self.show_ocr_text = True
         self.show_furigana = True
+        self.show_in_region_translation = False
         self.japanese_font = "Meiryo"
         self.japanese_font_size = 16
         self.font_size_en = 10
@@ -1196,9 +1197,11 @@ class KwaScreenApp:
                     # Re-render card if currently showing (data was updated in-place)
                     if self._card_window and self._card_data_idx >= 0:
                         self._render_card()
+                    self._update_in_region_translations()
                 elif msg_type == "cached_translations_ready":
                     if self._card_window and self._card_data_idx >= 0:
                         self._render_card()
+                    self._update_in_region_translations()
                 elif msg_type == "toggle_settings":
                     self.settings.toggle()
         except queue.Empty:
@@ -1269,6 +1272,71 @@ class KwaScreenApp:
         self._hide_card()
         if self.current_hover_idx >= 0 and self.current_hover_idx < len(self.ocr_boxes):
             self._show_card(self.current_hover_idx)
+
+    def _in_region_active(self):
+        return self.show_in_region_translation and self.translator != "none"
+
+    def _refresh_in_region_translations(self):
+        """Called when the in-region translation setting toggles."""
+        self._refresh_box_alphas()
+        self._update_in_region_translations()
+
+    def _refresh_box_alphas(self):
+        """Update window alpha for all box windows based on in-region setting."""
+        alpha = 0xFF if self._in_region_active() else 0xBB
+        for win, _, _ in self._box_windows:
+            try:
+                hwnd = user32.GetAncestor(win.winfo_id(), 2)
+                user32.SetLayeredWindowAttributes(hwnd, 0, alpha, LWA_ALPHA)
+            except Exception:
+                pass
+
+    def _update_in_region_translations(self):
+        """Draw English translation text directly on each OCR box overlay."""
+        active = self._in_region_active()
+        for idx, (win, canvas, box_idx) in enumerate(self._box_windows):
+            if box_idx >= len(self.ocr_boxes):
+                continue
+            canvas.delete("in_region_trans")
+            canvas.delete("in_region_bg")
+            if not active:
+                continue
+            box = self.ocr_boxes[box_idx]
+            eng = box['data'].get('english', '')
+            if not eng:
+                continue
+            bbox = box['orig_bbox']
+            bw = max(int(bbox['width']), 4)
+            bh = max(int(bbox['height']), 4)
+            # White background to cover Japanese text
+            canvas.create_rectangle(
+                BOX_PAD, BOX_PAD, BOX_PAD + bw, BOX_PAD + bh,
+                fill="white", outline="", tags="in_region_bg"
+            )
+            # Find largest font size that fits
+            pad = 4
+            max_w = bw - pad * 2
+            max_h = bh - pad * 2
+            font_size = max(8, bh // 3)
+            # Try to fit in one line first, shrink if needed
+            f = tkfont.Font(family="Segoe UI", size=font_size)
+            while font_size > 8:
+                f.configure(size=font_size)
+                tw = f.measure(eng)
+                th = f.metrics("linespace")
+                if tw <= max_w and th <= max_h:
+                    break
+                font_size -= 1
+            f.configure(size=max(8, font_size))
+            # If still too wide, use wrapping
+            final_fs = max(8, font_size)
+            canvas.create_text(
+                BOX_PAD + bw // 2, BOX_PAD + bh // 2,
+                text=eng, font=("Segoe UI", final_fs),
+                fill="#1c1c1e", anchor="center",
+                width=max_w if f.measure(eng) > max_w else 0,
+                tags="in_region_trans"
+            )
 
     def _retranslate_boxes(self):
         """Re-translate all OCR boxes whose english field is empty."""
@@ -1776,7 +1844,8 @@ class KwaScreenApp:
                 hwnd = user32.GetAncestor(win.winfo_id(), 2)
                 ex = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
                 user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED)
-                user32.SetLayeredWindowAttributes(hwnd, 0, 0xBB, LWA_ALPHA)
+                box_alpha = 0xFF if self._in_region_active() else 0xBB
+                user32.SetLayeredWindowAttributes(hwnd, 0, box_alpha, LWA_ALPHA)
             except Exception:
                 pass
 
@@ -1807,6 +1876,8 @@ class KwaScreenApp:
 
             self._box_windows.append((win, canvas, idx))
 
+        self._update_in_region_translations()
+
     def _destroy_box_windows(self):
         """Destroy all box windows and hide card."""
         self._hide_card()
@@ -1826,15 +1897,16 @@ class KwaScreenApp:
                 self._box_windows[idx][0].focus_force()
             except Exception:
                 pass
-        # Highlight this box, reset others
-        for _, canvas, i in self._box_windows:
-            color = "#ff9500" if i == idx else "#007aff"
-            w = BORDER_WIDTH
-            try:
-                canvas.itemconfig("box_border", outline=color, width=w)
-                canvas.delete("word_hl")
-            except Exception:
-                pass
+        # Highlight this box, reset others (skip when in-region translation is on)
+        if not self._in_region_active():
+            for _, canvas, i in self._box_windows:
+                color = "#ff9500" if i == idx else "#007aff"
+                w = BORDER_WIDTH
+                try:
+                    canvas.itemconfig("box_border", outline=color, width=w)
+                    canvas.delete("word_hl")
+                except Exception:
+                    pass
         self._show_card(idx)
 
     def _box_leave(self, idx):
@@ -1842,12 +1914,13 @@ class KwaScreenApp:
         if self.is_dragging:
             return
         self._hide_card()
-        for _, canvas, _ in self._box_windows:
-            try:
-                canvas.itemconfig("box_border", outline="#007aff", width=BORDER_WIDTH)
-                canvas.delete("word_hl")
-            except Exception:
-                pass
+        if not self._in_region_active():
+            for _, canvas, _ in self._box_windows:
+                try:
+                    canvas.itemconfig("box_border", outline="#007aff", width=BORDER_WIDTH)
+                    canvas.delete("word_hl")
+                except Exception:
+                    pass
 
     def _box_click(self, event, idx):
         """Mouse down on a box → start word selection."""
@@ -2928,7 +3001,7 @@ class KwaScreenApp:
             content_h += ff_temp.metrics("linespace") + 2  # furigana + gap
         if self.show_romaji:
             content_h += 18 + 2
-        if self.show_translation:
+        if self.show_translation and not self._in_region_active():
             est_chars = max(1, (card_w - 16) // 7)
             en_lines = max(1, -(-len(data.get('english', '')) // est_chars))
             content_h += en_lines * en_font.metrics("linespace")
@@ -3058,8 +3131,8 @@ class KwaScreenApp:
                                fill="#0066cc", anchor="nw", tags="romaji_text")
             ly += 18 + 2
 
-        # English
-        if self.show_translation:
+        # English (skip if translation is shown in-region instead)
+        if self.show_translation and not self._in_region_active():
             eng_y = ly
             canvas.create_text(pad_x, eng_y, text=data['english'],
                                font=("Segoe UI", self.font_size_en, "bold"),
@@ -3146,7 +3219,8 @@ class KwaScreenApp:
         if wi < 0:
             return
 
-        self._redraw_box_highlight(idx, char_off)
+        if not self._in_region_active():
+            self._redraw_box_highlight(idx, char_off)
 
         if char_off != self._card_hover_char_idx:
             self._card_hover_char_idx = char_off

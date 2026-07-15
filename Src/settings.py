@@ -74,6 +74,7 @@ class SettingsManager:
         self._entries_lbl.configure(text=self._slider_disp(self._val_to_slider(a.max_dict_entries)))
         self._senses_slider.set(self._val_to_slider(a.max_dict_senses))
         self._senses_lbl.configure(text=self._slider_disp(self._val_to_slider(a.max_dict_senses)))
+        self._show_in_region_var.set(a.show_in_region_translation)
         for action in ("capture", "snip", "settings"):
             btn = self.hk_btns.get(action)
             if btn and btn.winfo_exists():
@@ -106,6 +107,7 @@ class SettingsManager:
             a.region_detect_scale = data.get("region_detect_scale", 100)
             a.max_dict_entries = data.get("max_dict_entries", 4)
             a.max_dict_senses = data.get("max_dict_senses", 4)
+            a.show_in_region_translation = data.get("show_in_region_translation", False)
             hk = data.get("hotkeys", {})
             if "capture" in hk:
                 a.hk_capture = hk["capture"]
@@ -130,6 +132,7 @@ class SettingsManager:
             "region_detect_scale": a.region_detect_scale,
             "max_dict_entries": a.max_dict_entries,
             "max_dict_senses": a.max_dict_senses,
+            "show_in_region_translation": a.show_in_region_translation,
             "hotkeys": {
                 "capture": a.hk_capture,
                 "snip": a.hk_snip,
@@ -237,8 +240,12 @@ class SettingsManager:
             a.show_furigana = self._show_furigana_var.get()
             a.show_romaji = self._show_romaji_var.get()
             a.skip_non_japanese = self._skip_nj_var.get()
+            old_in_region = a.show_in_region_translation
+            a.show_in_region_translation = self._show_in_region_var.get()
             self.save()
             a._refresh_hover_card()
+            if old_in_region != a.show_in_region_translation:
+                a._refresh_in_region_translations()
 
         # ── Hover Card ───────────────────────────────────────────────
         card = self._card(win)
@@ -285,6 +292,8 @@ class SettingsManager:
         card = self._card(win)
         self._section_label(card, "OCR Filter")
         self._skip_nj_var = self._chk(self._row(card), "Skip non-Japanese text", a.skip_non_japanese, on_toggle)
+        self._show_in_region_var = self._chk(self._row(card), "Show translation in OCR region",
+                                              a.show_in_region_translation, on_toggle)
 
         # ── OCR Scaling ──────────────────────────────────────────────
         card = self._card(win)
