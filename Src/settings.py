@@ -76,6 +76,8 @@ class SettingsManager:
         self._senses_lbl.configure(text=self._slider_disp(self._val_to_slider(a.max_dict_senses)))
         self._show_in_region_var.set(a.show_in_region_translation)
         self._skip_num_var.set(a.skip_numeric_only)
+        self._threshold_slider.set(self._threshold_val_to_slider(a.in_region_auto_threshold))
+        self._threshold_lbl.configure(text=self._threshold_disp(a.in_region_auto_threshold))
         for action in ("capture", "snip", "settings"):
             btn = self.hk_btns.get(action)
             if btn and btn.winfo_exists():
@@ -110,6 +112,7 @@ class SettingsManager:
             a.max_dict_senses = data.get("max_dict_senses", 4)
             a.show_in_region_translation = data.get("show_in_region_translation", False)
             a.skip_numeric_only = data.get("skip_numeric_only", True)
+            a.in_region_auto_threshold = data.get("in_region_auto_threshold", 0)
             hk = data.get("hotkeys", {})
             if "capture" in hk:
                 a.hk_capture = hk["capture"]
@@ -136,6 +139,7 @@ class SettingsManager:
             "max_dict_senses": a.max_dict_senses,
             "show_in_region_translation": a.show_in_region_translation,
             "skip_numeric_only": a.skip_numeric_only,
+            "in_region_auto_threshold": a.in_region_auto_threshold,
             "hotkeys": {
                 "capture": a.hk_capture,
                 "snip": a.hk_snip,
@@ -230,6 +234,22 @@ class SettingsManager:
     def _slider_disp(v):
         return "No limit" if v >= 10 else str(int(round(v)))
 
+    @staticmethod
+    def _threshold_val_to_slider(v):
+        if v <= 0: return 1
+        return v - 1
+
+    @staticmethod
+    def _threshold_slider_to_val(s):
+        s = int(round(s))
+        if s <= 1: return 0
+        return s + 1
+
+    @staticmethod
+    def _threshold_disp(v):
+        if v <= 0: return "Off"
+        return str(v) + "+"
+
     # ── Build UI ─────────────────────────────────────────────────────────
 
     def _setup_ui(self, win):
@@ -301,6 +321,27 @@ class SettingsManager:
                                         a.skip_numeric_only, on_toggle)
         self._show_in_region_var = self._chk(self._row(card), "Show translation in OCR region",
                                               a.show_in_region_translation, on_toggle)
+
+        def _on_threshold(v):
+            val = self._threshold_slider_to_val(float(v))
+            a.in_region_auto_threshold = val
+            self._threshold_lbl.configure(text=self._threshold_disp(val))
+            self.save()
+            a._refresh_in_region_translations()
+            a._refresh_hover_card()
+
+        f = self._row(card)
+        self._field(f, "Auto in-region at ≥")
+        self._threshold_lbl = ctk.CTkLabel(f, text=self._threshold_disp(a.in_region_auto_threshold),
+                                           font=("Segoe UI", 12, "bold"),
+                                           width=50, text_color=_ACCENT, anchor="w")
+        self._threshold_lbl.pack(side="right")
+        self._threshold_slider = ctk.CTkSlider(f, from_=1, to=14, number_of_steps=13,
+                                               command=_on_threshold, width=160,
+                                               button_color=_ACCENT, button_hover_color=_ACCENT_HOVER,
+                                               progress_color=_ACCENT)
+        self._threshold_slider.set(self._threshold_val_to_slider(a.in_region_auto_threshold))
+        self._threshold_slider.pack(side="left")
 
         # ── OCR Scaling ──────────────────────────────────────────────
         card = self._card(win)

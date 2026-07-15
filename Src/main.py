@@ -996,6 +996,7 @@ class KwaScreenApp:
         self.show_ocr_text = True
         self.show_furigana = True
         self.show_in_region_translation = False
+        self.in_region_auto_threshold = 0
         self.japanese_font = "Meiryo"
         self.japanese_font_size = 16
         self.font_size_en = 10
@@ -1275,7 +1276,13 @@ class KwaScreenApp:
             self._show_card(self.current_hover_idx)
 
     def _in_region_active(self):
-        return self.show_in_region_translation and self.translator != "none"
+        if self.translator == "none":
+            return False
+        if self.show_in_region_translation:
+            return True
+        if self.in_region_auto_threshold > 0 and len(self.ocr_boxes) >= self.in_region_auto_threshold:
+            return True
+        return False
 
     def _refresh_in_region_translations(self):
         """Called when the in-region translation setting toggles."""
