@@ -821,6 +821,118 @@ def get_line_bounding_rect(line):
     }
 
 
+def _merge_nearby_lines(lines, gap_tolerance=40):
+    """Merge adjacent OCR lines that share orientation and are close together.
+
+    For horizontal text: merges lines stacked vertically (small Y gap, high X overlap).
+    For vertical text: merges lines side by side (small X gap, high Y overlap).
+    Lines ending in continuation punctuation (、「『 etc.) get relaxed thresholds.
+    Lines ending in sentence terminators (。．.) are never merged with the next line.
+    Bounding boxes are recomputed from the merged words list via get_line_bounding_rect.
+    """
+    if len(lines) < 2:
+        return lines
+
+    # print(f"[merge] {len(lines)} lines in, verticals: {sum(1 for l in lines if l.get('vertical'))}v {sum(1 for l in lines if not l.get('vertical'))}h")
+    _has_vert = any(l.get('vertical') for l in lines)
+    _has_horiz = any(not l.get('vertical') for l in lines)
+    if _has_vert and _has_horiz:
+        lines = sorted(lines, key=lambda l: get_line_bounding_rect(l)['x'], reverse=True)
+    elif _has_horiz:
+        lines = sorted(lines, key=lambda l: get_line_bounding_rect(l)['y'])
+    elif _has_vert:
+        lines = sorted(lines, key=lambda l: get_line_bounding_rect(l)['x'], reverse=True)
+
+    _CONTINUATION_TAIL = set('、，。「『【〔〈《≪〝')
+    _CONTINUATION_HEAD = set('」』】〕〉》≫〞〟')
+    _SENTENCE_END = set('。．.')
+
+    merged = [lines[0]]
+    last_bbox = get_line_bounding_rect(lines[0])
+
+    for curr in lines[1:]:
+        prev = merged[-1]
+
+        if prev.get('vertical') != curr.get('vertical'):
+            merged.append(curr)
+            last_bbox = get_line_bounding_rect(curr)
+            continue
+
+        p_text = prev.get('text', '')
+        if p_text and p_text[-1] in _SENTENCE_END:
+            merged.append(curr)
+            last_bbox = get_line_bounding_rect(curr)
+            continue
+
+        c_text = curr.get('text', '')
+        is_vert = prev.get('vertical', False)
+        p_bbox = last_bbox
+        c_bbox = get_line_bounding_rect(curr)
+
+        is_continuation = (
+            (p_text and p_text[-1] in _CONTINUATION_TAIL)
+            or (c_text and c_text[0] in _CONTINUATION_HEAD)
+        )
+
+        eff_gap = gap_tolerance * 2 if is_continuation else gap_tolerance
+        eff_width_ratio = 0.3 if is_continuation else 0.6
+        eff_alignment = 0.15 if is_continuation else 0.4
+
+        should_merge = False
+
+        if not is_vert:
+            prev_bottom = p_bbox['y'] + p_bbox['height']
+            gap = c_bbox['y'] - prev_bottom
+            w1, w2 = p_bbox['width'], c_bbox['width']
+            width_ratio = min(w1, w2) / max(w1, w2) if max(w1, w2) > 0 else 0
+            left_overlap = max(p_bbox['x'], c_bbox['x'])
+            right_overlap = min(p_bbox['x'] + w1, c_bbox['x'] + w2)
+            overlap_w = max(0, right_overlap - left_overlap)
+            min_w = min(w1, w2)
+            alignment = overlap_w / min_w if min_w > 0 else 0
+            should_merge = (
+                gap >= 0 and gap <= eff_gap
+                and width_ratio >= eff_width_ratio
+                and alignment >= eff_alignment
+            )
+            # print(f"[merge] H  prev=\"{p_text[-8:]}\" curr=\"{c_text[:8]}\" gap={gap:.1f}(max={eff_gap}) wr={width_ratio:.2f}(min={eff_width_ratio:.2f}) al={alignment:.2f}(min={eff_alignment:.2f}) cont={is_continuation} -> {'MERGE' if should_merge else 'SKIP'}")
+            # print(f"        p_bbox={p_bbox} c_bbox={c_bbox}")
+        else:
+            p_cx = p_bbox['x'] + p_bbox['width'] / 2
+            c_cx = c_bbox['x'] + c_bbox['width'] / 2
+            gap = abs(p_cx - c_cx)
+            h1, h2 = p_bbox['height'], c_bbox['height']
+            height_ratio = min(h1, h2) / max(h1, h2) if max(h1, h2) > 0 else 0
+            top_overlap = max(p_bbox['y'], c_bbox['y'])
+            bottom_overlap = min(p_bbox['y'] + h1, c_bbox['y'] + h2)
+            overlap_h = max(0, bottom_overlap - top_overlap)
+            min_h = min(h1, h2)
+            alignment = overlap_h / min_h if min_h > 0 else 0
+            should_merge = (
+                gap <= eff_gap
+                and height_ratio >= eff_width_ratio
+                and alignment >= eff_alignment
+            )
+            # print(f"[merge] V  prev=\"{p_text[-8:]}\" curr=\"{c_text[:8]}\" gap={gap:.1f}(max={eff_gap}) wr={height_ratio:.2f}(min={eff_width_ratio:.2f}) al={alignment:.2f}(min={eff_alignment:.2f}) cont={is_continuation} -> {'MERGE' if should_merge else 'SKIP'}")
+            # print(f"        p_bbox={p_bbox} c_bbox={c_bbox}")
+
+        if should_merge:
+            prev_last = prev['text'][-1] if prev['text'] else ''
+            curr_first = curr['text'][0] if curr['text'] else ''
+            if prev_last.isascii() and prev_last.isalnum() and curr_first.isascii() and curr_first.isalnum():
+                prev['text'] += ' ' + curr['text']
+            else:
+                prev['text'] += curr['text']
+            prev['words'].extend(curr['words'])
+            last_bbox = c_bbox
+        else:
+            merged.append(curr)
+            last_bbox = c_bbox
+
+    # print(f"[merge] {len(merged)} lines out (was {len(lines)})")
+    return merged
+
+
 def _sort_jamdict_entries(entries, pos='', hira='', word='', conj=''):
     """Prioritize entries whose kana forms match the contextual reading and word form."""
     if not entries:
@@ -947,7 +1059,7 @@ def _append_ocr_line(lines, text, x1, y1, x2, y2, vertical):
             accum += cw
             x1w = line_bbox['x'] + int(accum)
             words.append({'text': ch, 'bounding_rect': {'x': x0, 'y': line_bbox['y'], 'width': x1w - x0, 'height': line_bbox['height']}})
-    lines.append({'text': text, 'words': words})
+    lines.append({'text': text, 'words': words, 'vertical': vertical})
 
 
 class KwaScreenApp:
@@ -1180,6 +1292,9 @@ class KwaScreenApp:
                     elif hc: mode = f" [H{hc}]"
                     elif vc: mode = f" [V{vc}]"
                     print(f"OCR: {data} regions, {ocr_ms:.0f}ms {dims}{mode}")
+                    mc = getattr(self, '_last_merged_count', 0)
+                    if mc:
+                        print(f"Merged: {mc} regions joined")
                     print(f"Processing: {proc_ms:.0f}ms")
                     if trans_ms:
                         print(f"Translation: {trans_ms:.0f}ms")
@@ -1327,16 +1442,21 @@ class KwaScreenApp:
             bbox = box['orig_bbox']
             bw = max(int(bbox['width']), 4)
             bh = max(int(bbox['height']), 4)
+            is_vert = bh > bw
+            if is_vert:
+                dw, dh = bh, bw
+            else:
+                dw, dh = bw, bh
             # White background to cover Japanese text
             canvas.create_rectangle(
-                BOX_PAD, BOX_PAD, BOX_PAD + bw, BOX_PAD + bh,
+                BOX_PAD, BOX_PAD, BOX_PAD + dw, BOX_PAD + dh,
                 fill="white", outline="", tags="in_region_bg"
             )
             # Find largest font size that fits (single line or wrapped)
             pad = 4
-            max_w = bw - pad * 2
-            max_h = bh - pad * 2
-            font_size = max(7, bh // 3)
+            max_w = dw - pad * 2
+            max_h = dh - pad * 2
+            font_size = max(7, dh // 3)
             f = tkfont.Font(family="Segoe UI", size=font_size)
             while font_size > 7:
                 f.configure(size=font_size)
@@ -1354,7 +1474,7 @@ class KwaScreenApp:
             # If still too wide, use wrapping
             final_fs = max(5, font_size)
             canvas.create_text(
-                BOX_PAD + bw // 2, BOX_PAD + bh // 2,
+                BOX_PAD + dw // 2, BOX_PAD + dh // 2,
                 text=eng, font=("Segoe UI", final_fs),
                 fill="#1c1c1e", anchor="center",
                 width=max_w if f.measure(eng) > max_w else 0,
@@ -1679,6 +1799,9 @@ class KwaScreenApp:
             # Phase 0: OCR
             ocr_start = time.time()
             lines = self.run_ocr_paddle(win_crop)
+            pre_merge = len(lines)
+            lines = _merge_nearby_lines(lines)
+            self._last_merged_count = pre_merge - len(lines)
             ocr_time = (time.time() - ocr_start) * 1000
             self._last_ocr_ms = ocr_time
             self._last_crop_size = (win_crop.width, win_crop.height)
@@ -1878,15 +2001,23 @@ class KwaScreenApp:
         self.ocr_boxes = boxes
         self.current_hover_idx = -1
         self.crop_tk_imgs = []
+        rotate_vertical = self._in_region_active()
 
         for idx, box in enumerate(boxes):
             bbox = box['orig_bbox']
-            bx = int(self.overlay_x + bbox['x']) - BOX_PAD
-            by = int(self.overlay_y + bbox['y']) - BOX_PAD
             bw = max(int(bbox['width']), 4)
             bh = max(int(bbox['height']), 4)
-            win_w = bw + BOX_PAD * 2
-            win_h = bh + BOX_PAD * 2
+            is_vert = bh > bw and rotate_vertical
+            if is_vert:
+                win_w = bh + BOX_PAD * 2
+                win_h = bw + BOX_PAD * 2
+                bx = int(self.overlay_x + bbox['x'] + bw / 2 - bh / 2) - BOX_PAD
+                by = int(self.overlay_y + bbox['y'] + bh / 2 - bw / 2) - BOX_PAD
+            else:
+                win_w = bw + BOX_PAD * 2
+                win_h = bh + BOX_PAD * 2
+                bx = int(self.overlay_x + bbox['x']) - BOX_PAD
+                by = int(self.overlay_y + bbox['y']) - BOX_PAD
 
             win = tk.Toplevel(self.root)
             win.overrideredirect(True)
@@ -1900,7 +2031,11 @@ class KwaScreenApp:
             # Cropped OCR image scaled to fit original box size, offset by BOX_PAD
             crop = box.get('crop_pil')
             if crop:
-                crop_resized = crop.resize((bw, bh), Image.LANCZOS)
+                if is_vert:
+                    crop_rotated = crop.rotate(-90, expand=True)
+                    crop_resized = crop_rotated.resize((bh, bw), Image.LANCZOS)
+                else:
+                    crop_resized = crop.resize((bw, bh), Image.LANCZOS)
                 crop_tk = ImageTk.PhotoImage(crop_resized)
                 self.crop_tk_imgs.append(crop_tk)
                 canvas.create_image(BOX_PAD, BOX_PAD, image=crop_tk, anchor="nw")
@@ -3123,10 +3258,14 @@ class KwaScreenApp:
 
         # Crop image
         if self.show_crop and box.get('crop_pil'):
-            crop_tk = ImageTk.PhotoImage(box['crop_pil'])
+            crop_img = box['crop_pil']
+            bbox_check = box.get('orig_bbox', {})
+            if self._in_region_active() and bbox_check.get('height', 0) > bbox_check.get('width', 0):
+                crop_img = crop_img.rotate(-90, expand=True)
+            crop_tk = ImageTk.PhotoImage(crop_img)
             self.crop_tk_imgs.append(crop_tk)
             canvas.create_image(5, ly + 3, image=crop_tk, anchor="nw")
-            ly += 3 + box['crop_pil'].height + 24
+            ly += 3 + crop_img.height + 24
         else:
             ly += 8
         
